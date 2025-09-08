@@ -1,14 +1,16 @@
 import React from 'react';
 
 interface RawOutputDisplayProps {
-  rawContent: string | null;
+  tutorialParts: string[];
 }
 
-export const RawOutputDisplay: React.FC<RawOutputDisplayProps> = ({ rawContent }) => {
-  if (!rawContent) {
+export const RawOutputDisplay: React.FC<RawOutputDisplayProps> = ({ tutorialParts }) => {
+  if (!tutorialParts || tutorialParts.length === 0) {
     return null;
   }
   
+  const rawContent = tutorialParts.join('\n\n---PART_SEPARATOR---\n\n');
+
   return (
     <div className="w-full max-w-5xl mt-2">
       <h3 className="text-base font-semibold text-gray-400 mb-2 px-1">Raw LLM Output</h3>

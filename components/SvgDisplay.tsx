@@ -4,17 +4,19 @@ interface SvgDisplayProps {
   svgContent: string | null;
   isLoading: boolean;
   error: string | null;
-  timer: number;
+  explanation: string | null;
+  onNext: () => void;
+  isLastStep: boolean;
+  hasStarted: boolean;
 }
 
-const LoadingState: React.FC<{ timer: number }> = ({ timer }) => (
+const LoadingState: React.FC = () => (
     <div className="flex flex-col items-center justify-center text-gray-400">
         <svg className="animate-spin h-10 w-10 text-purple-400 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
         </svg>
-        <p className="text-lg font-medium">Crafting your SVG...</p>
-        <p className="text-sm mt-2 font-mono text-gray-500">{timer}s</p>
+        <p className="text-lg font-medium">Crafting your tutorial...</p>
     </div>
 );
 
@@ -24,7 +26,7 @@ const InitialState: React.FC = () => (
             <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
         </svg>
         <h3 className="text-xl font-semibold">Ready to visualize</h3>
-        <p className="mt-1 text-center">Enter a topic above to generate an SVG diagram.</p>
+        <p className="mt-1 text-center">Enter a topic above to generate a step-by-step SVG tutorial.</p>
     </div>
 );
 
@@ -38,12 +40,11 @@ const ErrorState: React.FC<{ message: string }> = ({ message }) => (
     </div>
 );
 
-export const SvgDisplay: React.FC<SvgDisplayProps> = ({ svgContent, isLoading, error, timer }) => {
-  const renderContent = () => {
-    if (error) {
-      return <ErrorState message={error} />;
-    }
-
+export const SvgDisplay: React.FC<SvgDisplayProps> = ({ svgContent, isLoading, error, explanation, onNext, isLastStep, hasStarted }) => {
+  const renderSvgArea = () => {
+    if (error) return <ErrorState message={error} />;
+    if (isLoading && !hasStarted) return <LoadingState />;
+    if (!hasStarted && !isLoading) return <InitialState />;
     if (svgContent) {
       return (
         <div
@@ -52,17 +53,27 @@ export const SvgDisplay: React.FC<SvgDisplayProps> = ({ svgContent, isLoading, e
         />
       );
     }
-    
-    if (isLoading) {
-      return <LoadingState timer={timer} />;
-    }
-
-    return <InitialState />;
+    return <div className="w-full h-full bg-gray-800/50"></div>; // Placeholder while loading/text-only steps
   };
 
   return (
-    <div className="w-full max-w-5xl bg-gray-800/50 border border-gray-700 rounded-lg shadow-lg aspect-[8/5] flex items-center justify-center p-4">
-      {renderContent()}
+    <div className="w-full max-w-5xl flex flex-col gap-4">
+        {hasStarted && !error && (
+            <div className="w-full bg-gray-800 border border-gray-700 rounded-lg p-4 min-h-[80px] flex items-center justify-between gap-4">
+                <p className="text-gray-300 flex-grow">{explanation || "Here is the next part of the SVG."}</p>
+                {!isLastStep && (
+                     <button
+                        onClick={onNext}
+                        className="flex-shrink-0 px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-md transition duration-200 whitespace-nowrap"
+                    >
+                        Next &rarr;
+                    </button>
+                )}
+            </div>
+        )}
+        <div className="w-full bg-gray-800/50 border border-gray-700 rounded-lg shadow-lg aspect-[8/5] flex items-center justify-center p-4">
+          {renderSvgArea()}
+        </div>
     </div>
   );
 };
