@@ -1,0 +1,5 @@
+{
+  "name": "AI SVG Generator",
+  "description": "An application that uses Gemini to generate a beautiful, minimal SVG visualization for any topic provided by the user.",
+  "requestFramePermissions": []
+}
