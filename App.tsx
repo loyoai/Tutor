@@ -4,7 +4,7 @@ import { TopicInput } from './components/TopicInput';
 import { SvgDisplay } from './components/SvgDisplay';
 import { RawOutputDisplay } from './components/RawOutputDisplay';
 import { generateSvgForTopicStream } from './services/geminiService';
-import { RealtimeAudioPlayer } from './services/realtimeAudioService';
+import { GeminiLiveAudioService } from './services/geminiLiveAudioService';
 
 const PART_SEPARATOR = '---PART_SEPARATOR---';
 
@@ -76,8 +76,9 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [limitThinking, setLimitThinking] = useState<boolean>(false);
+  const [isStreamingContent, setIsStreamingContent] = useState<boolean>(false);
   const iconCache = useRef<Record<string, string>>({});
-  const audioPlayer = useRef<RealtimeAudioPlayer | null>(null);
+  const audioPlayer = useRef<GeminiLiveAudioService | null>(null);
   const isMounted = useRef(true);
 
   useEffect(() => {
@@ -102,7 +103,14 @@ const App: React.FC = () => {
     setProcessedSvgContent('');
     
     audioPlayer.current?.disconnect();
-    audioPlayer.current = new RealtimeAudioPlayer();
+    audioPlayer.current = new GeminiLiveAudioService();
+    
+    // Pre-warm the audio service while Gemini is thinking
+    try {
+        await audioPlayer.current.preWarmForQuestion();
+    } catch (err) {
+        console.warn('Pre-warming audio service failed:', err);
+    }
     
     try {
         await audioPlayer.current.connect();
@@ -113,6 +121,8 @@ const App: React.FC = () => {
     }
 
     let accumulatedRawContent = '';
+    setIsStreamingContent(true);
+    
     try {
       await generateSvgForTopicStream(topic, limitThinking, (chunk) => {
         accumulatedRawContent += chunk;
@@ -125,6 +135,7 @@ const App: React.FC = () => {
       console.error(err);
     } finally {
         setIsLoading(false);
+        setIsStreamingContent(false);
         if (accumulatedRawContent && tutorialParts.length === 0 && !error) {
              const parts = accumulatedRawContent.split(PART_SEPARATOR).map(p => p.trim()).filter(Boolean);
              if (parts.length > 0) {
@@ -159,11 +170,19 @@ const App: React.FC = () => {
 
   // Main effect to drive the automated tutorial playback
   useEffect(() => {
-    if (isLoading || error || isSpeaking || playbackIndex >= tutorialParts.length) {
+    // Start processing as soon as we have parts, don't wait for streaming to complete
+    if (error || isSpeaking || playbackIndex >= tutorialParts.length) {
+        return;
+    }
+    
+    // If we're still streaming and don't have the next part yet, wait
+    if (isStreamingContent && playbackIndex >= tutorialParts.length) {
         return;
     }
 
     const currentPart = tutorialParts[playbackIndex];
+    if (!currentPart) return;
+    
     const isSvgPart = currentPart.trim().startsWith('<');
 
     const processPart = async () => {
@@ -189,7 +208,7 @@ const App: React.FC = () => {
     
     processPart();
 
-  }, [tutorialParts, playbackIndex, isLoading, error, isSpeaking]);
+  }, [tutorialParts, playbackIndex, error, isSpeaking, isStreamingContent]);
 
   useEffect(() => {
     if (accumulatedSvg) {
