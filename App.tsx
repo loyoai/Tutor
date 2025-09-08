@@ -1,10 +1,10 @@
-
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Header } from './components/Header';
 import { TopicInput } from './components/TopicInput';
 import { SvgDisplay } from './components/SvgDisplay';
 import { RawOutputDisplay } from './components/RawOutputDisplay';
 import { generateSvgForTopicStream } from './services/geminiService';
+import { RealtimeAudioPlayer } from './services/realtimeAudioService';
 
 const PART_SEPARATOR = '---PART_SEPARATOR---';
 
@@ -70,12 +70,23 @@ const processSvgWithDynamicIcons = async (
 const App: React.FC = () => {
   const [topic, setTopic] = useState<string>('');
   const [tutorialParts, setTutorialParts] = useState<string[]>([]);
-  const [currentStep, setCurrentStep] = useState(0);
+  const [playbackIndex, setPlaybackIndex] = useState(0);
+  const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [processedSvgContent, setProcessedSvgContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [limitThinking, setLimitThinking] = useState<boolean>(false);
   const iconCache = useRef<Record<string, string>>({});
+  const audioPlayer = useRef<RealtimeAudioPlayer | null>(null);
+  const isMounted = useRef(true);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+        isMounted.current = false;
+        audioPlayer.current?.disconnect();
+    };
+  }, []);
 
   const handleGenerateSvg = useCallback(async () => {
     if (!topic.trim()) {
@@ -86,11 +97,22 @@ const App: React.FC = () => {
     setIsLoading(true);
     setError(null);
     setTutorialParts([]);
-    setCurrentStep(0);
+    setPlaybackIndex(0);
+    setIsSpeaking(false);
     setProcessedSvgContent('');
     
-    let accumulatedRawContent = '';
+    audioPlayer.current?.disconnect();
+    audioPlayer.current = new RealtimeAudioPlayer();
+    
+    try {
+        await audioPlayer.current.connect();
+    } catch (err) {
+        setError("Failed to connect to the audio service. Please check your API key and network connection.");
+        setIsLoading(false);
+        return;
+    }
 
+    let accumulatedRawContent = '';
     try {
       await generateSvgForTopicStream(topic, limitThinking, (chunk) => {
         accumulatedRawContent += chunk;
@@ -114,16 +136,13 @@ const App: React.FC = () => {
     }
   }, [topic, limitThinking]);
 
-  const { currentExplanation, accumulatedSvg } = useMemo(() => {
-    let explanation: string | null = null;
+  const accumulatedSvg = useMemo(() => {
     const svgSnippets: string[] = [];
-
-    for (let i = 0; i <= currentStep && i < tutorialParts.length; i++) {
+    // Accumulate all SVG parts up to the current playback index
+    for (let i = 0; i < playbackIndex && i < tutorialParts.length; i++) {
         const part = tutorialParts[i];
         if (part.trim().startsWith('<')) {
             svgSnippets.push(part);
-        } else {
-            explanation = part;
         }
     }
     
@@ -135,8 +154,42 @@ const App: React.FC = () => {
         }
     }
 
-    return { currentExplanation: explanation, accumulatedSvg: combined };
-  }, [tutorialParts, currentStep]);
+    return combined;
+  }, [tutorialParts, playbackIndex]);
+
+  // Main effect to drive the automated tutorial playback
+  useEffect(() => {
+    if (isLoading || error || isSpeaking || playbackIndex >= tutorialParts.length) {
+        return;
+    }
+
+    const currentPart = tutorialParts[playbackIndex];
+    const isSvgPart = currentPart.trim().startsWith('<');
+
+    const processPart = async () => {
+        if (!isMounted.current) return;
+
+        if (isSvgPart) {
+            setPlaybackIndex(prev => prev + 1);
+        } else {
+            setIsSpeaking(true);
+            try {
+                await audioPlayer.current?.speak(currentPart);
+            } catch (e) {
+                console.error("Error speaking text:", e);
+                // Optionally set an error state here or just continue
+            } finally {
+                if (isMounted.current) {
+                    setIsSpeaking(false);
+                    setPlaybackIndex(prev => prev + 1);
+                }
+            }
+        }
+    };
+    
+    processPart();
+
+  }, [tutorialParts, playbackIndex, isLoading, error, isSpeaking]);
 
   useEffect(() => {
     if (accumulatedSvg) {
@@ -150,12 +203,6 @@ const App: React.FC = () => {
         setProcessedSvgContent('');
     }
   }, [accumulatedSvg]);
-  
-  const handleNext = () => {
-      if (currentStep < tutorialParts.length - 1) {
-          setCurrentStep(prev => prev + 1);
-      }
-  };
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col items-center p-4 sm:p-6 lg:p-8 font-sans">
@@ -173,14 +220,12 @@ const App: React.FC = () => {
           svgContent={processedSvgContent}
           isLoading={isLoading}
           error={error}
-          explanation={currentExplanation}
-          onNext={handleNext}
-          isLastStep={currentStep >= tutorialParts.length - 1}
           hasStarted={tutorialParts.length > 0}
+          isSpeaking={isSpeaking}
         />
         <RawOutputDisplay tutorialParts={tutorialParts} />
         <footer className="text-center mt-auto py-4">
-            <p className="text-gray-500 text-sm">Powered by Gemini 2.5 Pro</p>
+            <p className="text-gray-500 text-sm">Powered by Gemini 2.5 Flash</p>
         </footer>
       </div>
     </div>

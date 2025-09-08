@@ -4,10 +4,8 @@ interface SvgDisplayProps {
   svgContent: string | null;
   isLoading: boolean;
   error: string | null;
-  explanation: string | null;
-  onNext: () => void;
-  isLastStep: boolean;
   hasStarted: boolean;
+  isSpeaking: boolean;
 }
 
 const LoadingState: React.FC = () => (
@@ -40,7 +38,7 @@ const ErrorState: React.FC<{ message: string }> = ({ message }) => (
     </div>
 );
 
-export const SvgDisplay: React.FC<SvgDisplayProps> = ({ svgContent, isLoading, error, explanation, onNext, isLastStep, hasStarted }) => {
+export const SvgDisplay: React.FC<SvgDisplayProps> = ({ svgContent, isLoading, error, hasStarted, isSpeaking }) => {
   const renderSvgArea = () => {
     if (error) return <ErrorState message={error} />;
     if (isLoading && !hasStarted) return <LoadingState />;
@@ -57,23 +55,17 @@ export const SvgDisplay: React.FC<SvgDisplayProps> = ({ svgContent, isLoading, e
   };
 
   return (
-    <div className="w-full max-w-5xl flex flex-col gap-4">
-        {hasStarted && !error && (
-            <div className="w-full bg-gray-800 border border-gray-700 rounded-lg p-4 min-h-[80px] flex items-center justify-between gap-4">
-                <p className="text-gray-300 flex-grow">{explanation || "Here is the next part of the SVG."}</p>
-                {!isLastStep && (
-                     <button
-                        onClick={onNext}
-                        className="flex-shrink-0 px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-md transition duration-200 whitespace-nowrap"
-                    >
-                        Next &rarr;
-                    </button>
-                )}
-            </div>
-        )}
+    <div className="w-full max-w-5xl flex flex-col gap-4 relative">
         <div className="w-full bg-gray-800/50 border border-gray-700 rounded-lg shadow-lg aspect-[8/5] flex items-center justify-center p-4">
           {renderSvgArea()}
         </div>
+        {isSpeaking && (
+            <div className="absolute bottom-6 right-6 bg-purple-600 text-white rounded-full p-3 shadow-lg flex items-center justify-center animate-pulse" aria-label="Application is speaking" role="status">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.858 17.142a5 5 0 010-7.072m2.828 9.9a9 9 0 010-12.728M12 12h.01" />
+                </svg>
+            </div>
+        )}
     </div>
   );
 };
