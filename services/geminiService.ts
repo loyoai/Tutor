@@ -62,7 +62,7 @@ export const generateSvgForTopicStream = async (
     };
 
     if (limitThinking) {
-      config.thinkingConfig = { thinkingBudget: 8192 };
+      config.thinkingConfig = { thinkingBudget: 512 };
     }
     
     const responseStream = await ai.models.generateContentStream({

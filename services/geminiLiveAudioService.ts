@@ -7,7 +7,7 @@ import {
 } from '@google/genai';
 
 // Debug logging helpers for live audio pipeline
-const LIVE_DEBUG = true;
+const LIVE_DEBUG = false;
 const ts = () => new Date().toISOString();
 const log = (...args: any[]) => { if (LIVE_DEBUG) console.log('[LiveAudio]', ts(), ...args); };
 const warn = (...args: any[]) => { if (LIVE_DEBUG) console.warn('[LiveAudio]', ts(), ...args); };
@@ -45,26 +45,11 @@ function pcm16bitToFloat32(base64String: string): Float32Array {
     }
 }
 
-interface WavConversionOptions {
-  numChannels: number;
-  sampleRate: number;
-  bitsPerSample: number;
-}
-
-function convertToWav(rawData: string[], mimeType: string): Buffer {
-  const options = parseMimeType(mimeType);
-  const dataLength = rawData.reduce((a, b) => a + b.length, 0);
-  const wavHeader = createWavHeader(dataLength, options);
-  const buffer = Buffer.concat(rawData.map(data => Buffer.from(data, 'base64')));
-
-  return Buffer.concat([wavHeader, buffer]);
-}
-
-function parseMimeType(mimeType: string): WavConversionOptions {
+function parseMimeType(mimeType: string): { sampleRate?: number; numChannels?: number; bitsPerSample?: number } {
   const [fileType, ...params] = mimeType.split(';').map(s => s.trim());
   const [_, format] = fileType.split('/');
 
-  const options: Partial<WavConversionOptions> = {
+  const options: any = {
     numChannels: 1,
     bitsPerSample: 16,
   };
@@ -83,35 +68,7 @@ function parseMimeType(mimeType: string): WavConversionOptions {
     }
   }
 
-  return options as WavConversionOptions;
-}
-
-function createWavHeader(dataLength: number, options: WavConversionOptions): Buffer {
-  const {
-    numChannels,
-    sampleRate,
-    bitsPerSample,
-  } = options;
-
-  const byteRate = sampleRate * numChannels * bitsPerSample / 8;
-  const blockAlign = numChannels * bitsPerSample / 8;
-  const buffer = Buffer.alloc(44);
-
-  buffer.write('RIFF', 0);                      // ChunkID
-  buffer.writeUInt32LE(36 + dataLength, 4);     // ChunkSize
-  buffer.write('WAVE', 8);                      // Format
-  buffer.write('fmt ', 12);                     // Subchunk1ID
-  buffer.writeUInt32LE(16, 16);                 // Subchunk1Size (PCM)
-  buffer.writeUInt16LE(1, 20);                  // AudioFormat (1 = PCM)
-  buffer.writeUInt16LE(numChannels, 22);        // NumChannels
-  buffer.writeUInt32LE(sampleRate, 24);         // SampleRate
-  buffer.writeUInt32LE(byteRate, 28);           // ByteRate
-  buffer.writeUInt16LE(blockAlign, 32);         // BlockAlign
-  buffer.writeUInt16LE(bitsPerSample, 34);      // BitsPerSample
-  buffer.write('data', 36);                     // Subchunk2ID
-  buffer.writeUInt32LE(dataLength, 40);         // Subchunk2Size
-
-  return buffer;
+  return options;
 }
 
 interface AudioChunk {
@@ -139,7 +96,7 @@ export class GeminiLiveAudioService {
     private session?: Session;
     private audioContext?: AudioContext;
     private outputNode?: AudioNode;
-    private responseQueue: LiveServerMessage[] = [];
+    // removed responseQueue; we process messages directly
     private speechQueue: QueuedSpeechRequest[] = [];
     private isProcessingQueue = false;
     private isSessionWarmedUp = false;
@@ -147,8 +104,7 @@ export class GeminiLiveAudioService {
     // Gapless scheduling state
     private playbackCursor = 0; // next scheduled start time in AudioContext time
     private readonly scheduleAheadSec = 0.5; // how far ahead to keep the buffer filled
-    private readonly idleFinishMs = 600; // wait after last chunk before finishing
-    private isFirstUtterance = true; // first spoken turn tends to stream slower
+    private readonly idleFinishMs = 200; // shorter grace after last chunk for snappier handoff
     
     constructor() {
         if (!process.env.API_KEY) {
@@ -161,7 +117,7 @@ export class GeminiLiveAudioService {
     // Finish when: turnComplete received AND no new chunks arrive for a short window AND
     // all scheduled chunks have ended. This avoids cutting off late-arriving chunks.
     private ensureFinishAfterIdle(request: QueuedSpeechRequest): void {
-        const idleMs = this.isFirstUtterance ? 1600 : this.idleFinishMs;
+        const idleMs = this.idleFinishMs;
         if (request.finishTimer) {
             clearTimeout(request.finishTimer);
         }
@@ -174,15 +130,10 @@ export class GeminiLiveAudioService {
             const idleLongEnough = now - lastTs >= idleMs;
             const allScheduled = request.scheduledChunkCount >= request.audioChunks.length;
             const allEnded = request.endedChunkCount >= request.scheduledChunkCount && request.scheduledChunkCount > 0;
-            const minChunks = this.isFirstUtterance ? 3 : 2;
-            const shortText = (request.text?.trim().split(/\s+/).length || 0) <= 12 || (request.text?.length || 0) <= 80;
             const totalReceived = request.audioChunks.length;
-            const haveEnoughChunks = shortText
-              ? (request.scheduledChunkCount >= 1 && totalReceived >= 1)
-              : (request.scheduledChunkCount >= minChunks || totalReceived >= minChunks);
+            const haveEnoughChunks = totalReceived > 0;
 
             log('finish-check', {
-              isFirst: this.isFirstUtterance,
               idleMs,
               now,
               lastTs,
@@ -192,8 +143,6 @@ export class GeminiLiveAudioService {
               ended: request.endedChunkCount,
               allScheduled,
               allEnded,
-              minChunks,
-              shortText,
               haveEnoughChunks,
               textPreview: request.text?.slice(0, 100) || ''
             });
@@ -295,7 +244,6 @@ export class GeminiLiveAudioService {
           turnComplete: !!message.serverContent?.turnComplete,
           parts: message.serverContent?.modelTurn?.parts?.length || 0
         });
-        this.responseQueue.push(message);
         this.processMessage(message);
     }
 
@@ -361,6 +309,10 @@ export class GeminiLiveAudioService {
             // Prime cursor slightly in the future to avoid immediate underrun
             const now = this.audioContext.currentTime;
             request.nextStartAt = now + 0.08;
+            // Ensure context is running to avoid start latency on some browsers
+            if (this.audioContext.state === 'suspended') {
+                this.audioContext.resume().catch(() => {});
+            }
         }
         log('startPlayingChunks', { nextStartAt: request.nextStartAt });
         this.scheduleNewChunks(request);
@@ -397,7 +349,7 @@ export class GeminiLiveAudioService {
                 source.buffer = buffer;
                 (this.outputNode || ctx.destination) && source.connect(this.outputNode || ctx.destination);
 
-                const startAt = Math.max(request.nextStartAt ?? ctx.currentTime + 0.02, ctx.currentTime + 0.01);
+                const startAt = Math.max(request.nextStartAt ?? ctx.currentTime + 0.01, ctx.currentTime + 0.005);
                 source.start(startAt);
                 request.nextStartAt = startAt + buffer.duration;
                 log('chunk-scheduled', {
@@ -435,8 +387,7 @@ export class GeminiLiveAudioService {
         if (currentRequest) {
             currentRequest.resolve();
         }
-        log('finishCurrentSpeechRequest', { wasFirst: this.isFirstUtterance, queueLen: this.speechQueue.length });
-        this.isFirstUtterance = false;
+        log('finishCurrentSpeechRequest', { queueLen: this.speechQueue.length });
         this.isProcessingQueue = false;
         this.processQueue();
     }
@@ -465,7 +416,6 @@ export class GeminiLiveAudioService {
             };
             
             log('enqueue speak', {
-              isFirstUtterance: this.isFirstUtterance,
               textLen: text.length,
               words: text.trim().split(/\s+/).length,
               queueLenBefore: this.speechQueue.length,
@@ -533,7 +483,6 @@ export class GeminiLiveAudioService {
             request.reject(new Error("Audio service disconnected."))
         );
         this.speechQueue = [];
-        this.responseQueue = [];
         this.isProcessingQueue = false;
         this.chunkCounter = 0;
     }

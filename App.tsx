@@ -223,7 +223,28 @@ const App: React.FC = () => {
 
         if (isSvgPart) {
             alog('advance on SVG part', { index: playbackIndex });
+            // Advance to show SVG immediately
             setPlaybackIndex(prev => prev + 1);
+            // If the following part already exists and is text, start speaking it right away
+            const nextPart = tutorialParts[playbackIndex + 1];
+            const nextIsText = nextPart && !nextPart.trim().startsWith('<');
+            if (nextIsText) {
+              try {
+                // Yield a tick so the SVG render commits before speaking
+                await new Promise<void>(r => setTimeout(r, 0));
+                setIsSpeaking(true);
+                alog('speak next (paired with SVG)', { index: playbackIndex + 1, len: nextPart.length });
+                await audioPlayer.current?.speak(nextPart);
+                if (!isMounted.current) return;
+                setIsSpeaking(false);
+                // Skip the text part we just spoke
+                setPlaybackIndex(prev => prev + 1);
+                alog('advance after paired speak', { nextIndex: playbackIndex + 2 });
+              } catch (e) {
+                aerr('Error speaking paired text', e);
+                if (isMounted.current) setIsSpeaking(false);
+              }
+            }
         } else {
             setIsSpeaking(true);
             try {
