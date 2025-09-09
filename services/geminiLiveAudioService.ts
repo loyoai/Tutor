@@ -6,12 +6,20 @@ import {
   Session,
 } from '@google/genai';
 
+// Debug logging helpers for live audio pipeline
+const LIVE_DEBUG = true;
+const ts = () => new Date().toISOString();
+const log = (...args: any[]) => { if (LIVE_DEBUG) console.log('[LiveAudio]', ts(), ...args); };
+const warn = (...args: any[]) => { if (LIVE_DEBUG) console.warn('[LiveAudio]', ts(), ...args); };
+const errorLog = (...args: any[]) => { if (LIVE_DEBUG) console.error('[LiveAudio]', ts(), ...args); };
+
 /**
  * Decodes a base64 string into a Uint8Array, then converts the resulting
  * 16-bit PCM audio data into a Float32Array for the Web Audio API.
  */
 function pcm16bitToFloat32(base64String: string): Float32Array {
     try {
+        const inLen = base64String?.length ?? 0;
         const binaryString = atob(base64String);
         const len = binaryString.length;
         const buffer = new ArrayBuffer(len);
@@ -29,9 +37,10 @@ function pcm16bitToFloat32(base64String: string): Float32Array {
             float32Array[i] = int16Array[i] / 32768.0;
         }
         
+        log('pcm16->f32 decoded', { base64Len: inLen, bytes: len, samples: float32Array.length });
         return float32Array;
     } catch (e) {
-        console.error("Error decoding audio data:", e);
+        errorLog('Error decoding audio data:', e);
         return new Float32Array(0);
     }
 }
@@ -117,25 +126,85 @@ interface QueuedSpeechRequest {
   reject: (reason?: any) => void;
   audioChunks: AudioChunk[];
   isPlaying: boolean;
-  playedChunkCount: number;
+  scheduledChunkCount: number; // how many chunks have been scheduled
+  endedChunkCount: number;     // how many scheduled chunks finished
   isComplete: boolean;
+  nextStartAt?: number;        // absolute AudioContext time for next chunk
+  finishTimer?: number;        // timeout id for idle-finish checks
+  lastChunkTs?: number;        // ms timestamp of last received audio chunk
 }
 
 export class GeminiLiveAudioService {
     private ai: GoogleGenAI;
     private session?: Session;
     private audioContext?: AudioContext;
+    private outputNode?: AudioNode;
     private responseQueue: LiveServerMessage[] = [];
     private speechQueue: QueuedSpeechRequest[] = [];
     private isProcessingQueue = false;
     private isSessionWarmedUp = false;
     private chunkCounter = 0;
+    // Gapless scheduling state
+    private playbackCursor = 0; // next scheduled start time in AudioContext time
+    private readonly scheduleAheadSec = 0.5; // how far ahead to keep the buffer filled
+    private readonly idleFinishMs = 600; // wait after last chunk before finishing
+    private isFirstUtterance = true; // first spoken turn tends to stream slower
     
     constructor() {
         if (!process.env.API_KEY) {
             throw new Error("API_KEY environment variable is not set.");
         }
         this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        log('Service constructed');
+    }
+
+    // Finish when: turnComplete received AND no new chunks arrive for a short window AND
+    // all scheduled chunks have ended. This avoids cutting off late-arriving chunks.
+    private ensureFinishAfterIdle(request: QueuedSpeechRequest): void {
+        const idleMs = this.isFirstUtterance ? 1600 : this.idleFinishMs;
+        if (request.finishTimer) {
+            clearTimeout(request.finishTimer);
+        }
+        request.finishTimer = window.setTimeout(() => {
+            // Try to schedule any new chunks that may have arrived
+            this.scheduleNewChunks(request);
+
+            const now = Date.now();
+            const lastTs = request.lastChunkTs ?? 0;
+            const idleLongEnough = now - lastTs >= idleMs;
+            const allScheduled = request.scheduledChunkCount >= request.audioChunks.length;
+            const allEnded = request.endedChunkCount >= request.scheduledChunkCount && request.scheduledChunkCount > 0;
+            const minChunks = this.isFirstUtterance ? 3 : 2;
+            const shortText = (request.text?.trim().split(/\s+/).length || 0) <= 12 || (request.text?.length || 0) <= 80;
+            const totalReceived = request.audioChunks.length;
+            const haveEnoughChunks = shortText
+              ? (request.scheduledChunkCount >= 1 && totalReceived >= 1)
+              : (request.scheduledChunkCount >= minChunks || totalReceived >= minChunks);
+
+            log('finish-check', {
+              isFirst: this.isFirstUtterance,
+              idleMs,
+              now,
+              lastTs,
+              idleLongEnough,
+              totalReceived,
+              scheduled: request.scheduledChunkCount,
+              ended: request.endedChunkCount,
+              allScheduled,
+              allEnded,
+              minChunks,
+              shortText,
+              haveEnoughChunks,
+              textPreview: request.text?.slice(0, 100) || ''
+            });
+
+            // Re-check again if anything is still outstanding or new chunks are still arriving
+            if (!(request.isComplete && idleLongEnough && allScheduled && allEnded && haveEnoughChunks)) {
+                this.ensureFinishAfterIdle(request);
+                return;
+            }
+            this.finishCurrentSpeechRequest();
+        }, idleMs);
     }
 
     public async connect(): Promise<void> {
@@ -147,6 +216,30 @@ export class GeminiLiveAudioService {
         // Initialize audio context for browser environment
         if (typeof window !== 'undefined') {
             this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+            log('AudioContext created', { sampleRate: this.audioContext.sampleRate });
+
+            // Build a light output chain to improve clarity and reduce rumble
+            // source -> highpass -> compressor -> gain -> destination
+            const ctx = this.audioContext;
+            const highpass = ctx.createBiquadFilter();
+            highpass.type = 'highpass';
+            highpass.frequency.value = 90; // cut sub‑bass/rumble
+            highpass.Q.value = 0.707;
+
+            const compressor = ctx.createDynamicsCompressor();
+            compressor.threshold.value = -24;
+            compressor.knee.value = 30;
+            compressor.ratio.value = 6;
+            compressor.attack.value = 0.003;
+            compressor.release.value = 0.25;
+
+            const gain = ctx.createGain();
+            gain.gain.value = 0.9; // slight headroom
+
+            highpass.connect(compressor);
+            compressor.connect(gain);
+            gain.connect(ctx.destination);
+            this.outputNode = highpass; // connect sources to this node
         }
         
         const config = {
@@ -172,29 +265,36 @@ export class GeminiLiveAudioService {
         };
 
         try {
+            log('Connecting live session ...');
             this.session = await this.ai.live.connect({
-                model: 'models/gemini-2.5-flash-live-preview',
+                model: 'gemini-live-2.5-flash-preview',
                 callbacks: {
                     onopen: () => {
-                        console.debug('Gemini Live session opened');
+                        log('Session opened');
                         this.isSessionWarmedUp = true;
                     },
                     onmessage: this.handleMessage.bind(this),
-                    onerror: (e: ErrorEvent) => console.error('Session Error:', e.message),
+                    onerror: (e: ErrorEvent) => errorLog('Session Error:', e.message),
                     onclose: (e: CloseEvent) => {
-                        console.log('Session Closed:', e.reason);
+                        log('Session closed', { reason: e.reason });
                         this.isSessionWarmedUp = false;
                     },
                 },
                 config
             });
+            log('Live connect OK');
         } catch (error) {
-            console.error("Failed to connect to Gemini Live audio service:", error);
+            errorLog('Failed to connect to live audio service:', error);
             throw error;
         }
     }
 
     private handleMessage(message: LiveServerMessage): void {
+        log('onmessage', {
+          hasServerContent: !!message.serverContent,
+          turnComplete: !!message.serverContent?.turnComplete,
+          parts: message.serverContent?.modelTurn?.parts?.length || 0
+        });
         this.responseQueue.push(message);
         this.processMessage(message);
     }
@@ -216,71 +316,116 @@ export class GeminiLiveAudioService {
                 };
                 
                 currentRequest.audioChunks.push(audioChunk);
+                currentRequest.lastChunkTs = Date.now();
+                log('chunk-received', {
+                  idx: audioChunk.chunkIndex,
+                  mime: audioChunk.mimeType,
+                  base64Len: audioChunk.data.length,
+                  totalReceived: currentRequest.audioChunks.length,
+                  scheduled: currentRequest.scheduledChunkCount,
+                  ended: currentRequest.endedChunkCount
+                });
                 
-                // Start playing if not already playing
+                // Start or schedule this chunk immediately
                 if (!currentRequest.isPlaying) {
+                    log('startPlayingChunks trigger');
                     this.startPlayingChunks(currentRequest);
+                }
+                this.scheduleNewChunks(currentRequest);
+
+                // If a finish timer was pending, push it out since new data arrived
+                if (currentRequest.finishTimer) {
+                    clearTimeout(currentRequest.finishTimer);
+                    currentRequest.finishTimer = undefined;
                 }
             }
         }
 
         if (message.serverContent?.turnComplete) {
             currentRequest.isComplete = true;
+            log('turnComplete received', {
+              totalReceived: currentRequest.audioChunks.length,
+              scheduled: currentRequest.scheduledChunkCount,
+              ended: currentRequest.endedChunkCount
+            });
+            // Defer finish slightly to allow any last chunks to arrive
+            this.ensureFinishAfterIdle(currentRequest);
         }
     }
 
     private startPlayingChunks(request: QueuedSpeechRequest): void {
         request.isPlaying = true;
-        this.playNextChunk(request);
+        request.scheduledChunkCount = 0;
+        request.endedChunkCount = 0;
+        if (this.audioContext) {
+            // Prime cursor slightly in the future to avoid immediate underrun
+            const now = this.audioContext.currentTime;
+            request.nextStartAt = now + 0.08;
+        }
+        log('startPlayingChunks', { nextStartAt: request.nextStartAt });
+        this.scheduleNewChunks(request);
     }
 
-    private playNextChunk(request: QueuedSpeechRequest): void {
+    // Schedule any unscheduled chunks in the request
+    private scheduleNewChunks(request: QueuedSpeechRequest): void {
         if (!this.audioContext) {
-            console.warn("Audio context not available");
+            warn('Audio context not available');
             this.finishCurrentSpeechRequest();
             return;
         }
 
-        // Check if we have more chunks to play
-        if (request.playedChunkCount >= request.audioChunks.length) {
-            // No more chunks, check if turn is complete
-            if (request.isComplete) {
-                this.finishCurrentSpeechRequest();
-            }
-            return;
-        }
+        const ctx = this.audioContext;
+        while (request.scheduledChunkCount < request.audioChunks.length) {
+            const chunk = request.audioChunks[request.scheduledChunkCount];
+            try {
+                const audioData = pcm16bitToFloat32(chunk.data);
+                if (audioData.length === 0) {
+                    warn('empty audio data; skipping', { index: request.scheduledChunkCount });
+                    request.scheduledChunkCount++;
+                    continue;
+                }
 
-        const chunk = request.audioChunks[request.playedChunkCount];
-        
-        try {
-            const audioData = pcm16bitToFloat32(chunk.data);
-            if (audioData.length === 0) {
-                request.playedChunkCount++;
-                this.playNextChunk(request);
-                return;
-            }
-            
-            const sampleRate = 24000; // Expected from gemini-2.5-flash-live-preview
-            const buffer = this.audioContext.createBuffer(1, audioData.length, sampleRate);
-            buffer.getChannelData(0).set(audioData);
+                let sampleRate = 24000;
+                try {
+                    const parsed = parseMimeType(chunk.mimeType || 'audio/pcm;rate=24000');
+                    sampleRate = parsed.sampleRate || 24000;
+                } catch {}
+                const buffer = ctx.createBuffer(1, audioData.length, sampleRate);
+                buffer.getChannelData(0).set(audioData);
 
-            const source = this.audioContext.createBufferSource();
-            source.buffer = buffer;
-            source.connect(this.audioContext.destination);
-            
-            source.onended = () => {
-                request.playedChunkCount++;
-                // Small delay before playing next chunk to avoid overlap
-                setTimeout(() => {
-                    this.playNextChunk(request);
-                }, 10);
-            };
-            
-            source.start(0);
-        } catch (error) {
-            console.error("Error playing audio chunk:", error);
-            request.playedChunkCount++;
-            this.playNextChunk(request);
+                const source = ctx.createBufferSource();
+                source.buffer = buffer;
+                (this.outputNode || ctx.destination) && source.connect(this.outputNode || ctx.destination);
+
+                const startAt = Math.max(request.nextStartAt ?? ctx.currentTime + 0.02, ctx.currentTime + 0.01);
+                source.start(startAt);
+                request.nextStartAt = startAt + buffer.duration;
+                log('chunk-scheduled', {
+                  index: request.scheduledChunkCount,
+                  sampleRate,
+                  duration: buffer.duration,
+                  startAt,
+                  nextStartAt: request.nextStartAt,
+                  totalReceived: request.audioChunks.length
+                });
+
+                source.onended = () => {
+                    request.endedChunkCount++;
+                    log('chunk-ended', { ended: request.endedChunkCount, scheduled: request.scheduledChunkCount });
+                    // When a chunk ends, see if we can finish (after idle grace)
+                    if (request.isComplete) this.ensureFinishAfterIdle(request);
+                };
+                (source as any).onerror = (e: any) => {
+                    errorLog('AudioBufferSourceNode error:', e);
+                    request.endedChunkCount++;
+                    if (request.isComplete) this.ensureFinishAfterIdle(request);
+                };
+
+                request.scheduledChunkCount++;
+            } catch (error) {
+                errorLog('Error scheduling audio chunk:', error);
+                request.scheduledChunkCount++;
+            }
         }
     }
 
@@ -290,6 +435,8 @@ export class GeminiLiveAudioService {
         if (currentRequest) {
             currentRequest.resolve();
         }
+        log('finishCurrentSpeechRequest', { wasFirst: this.isFirstUtterance, queueLen: this.speechQueue.length });
+        this.isFirstUtterance = false;
         this.isProcessingQueue = false;
         this.processQueue();
     }
@@ -312,10 +459,18 @@ export class GeminiLiveAudioService {
                 reject,
                 audioChunks: [],
                 isPlaying: false,
-                playedChunkCount: 0,
+                scheduledChunkCount: 0,
+                endedChunkCount: 0,
                 isComplete: false
             };
             
+            log('enqueue speak', {
+              isFirstUtterance: this.isFirstUtterance,
+              textLen: text.length,
+              words: text.trim().split(/\s+/).length,
+              queueLenBefore: this.speechQueue.length,
+              preview: text.slice(0, 100)
+            });
             this.speechQueue.push(request);
             this.processQueue();
         });
@@ -342,11 +497,18 @@ export class GeminiLiveAudioService {
         const request = this.speechQueue[0];
         
         try {
+            log('sendClientContent', { textLen: request.text.length, preview: request.text.slice(0, 100) });
             this.session.sendClientContent({
-                turns: [request.text]
+                turns: [
+                    {
+                        role: 'user',
+                        parts: [{ text: request.text }],
+                    },
+                ],
+                turnComplete: true,
             });
         } catch (error) {
-            console.error("Error sending content to session:", error);
+            errorLog('Error sending content to session:', error);
             const failedRequest = this.speechQueue.shift();
             if (failedRequest) {
                 failedRequest.reject(error);
@@ -357,11 +519,14 @@ export class GeminiLiveAudioService {
     }
 
     public disconnect(): void {
+        log('disconnect called');
         this.session?.close();
         this.audioContext?.close().catch(console.error);
         this.session = undefined;
         this.audioContext = undefined;
+        this.outputNode = undefined;
         this.isSessionWarmedUp = false;
+        this.playbackCursor = 0;
         
         // Reject any pending promises in the queue
         this.speechQueue.forEach(request => 

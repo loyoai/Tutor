@@ -8,6 +8,13 @@ import { GeminiLiveAudioService } from './services/geminiLiveAudioService';
 
 const PART_SEPARATOR = '---PART_SEPARATOR---';
 
+// Debug logging helpers for playback flow
+const APP_DEBUG = true;
+const ats = () => new Date().toISOString();
+const alog = (...args: any[]) => { if (APP_DEBUG) console.log('[App]', ats(), ...args); };
+const awarn = (...args: any[]) => { if (APP_DEBUG) console.warn('[App]', ats(), ...args); };
+const aerr = (...args: any[]) => { if (APP_DEBUG) console.error('[App]', ats(), ...args); };
+
 /**
  * Fetches icon data, caches it, and replaces <lucide-icon> tags with SVG content.
  * @param svgString The raw SVG string from the AI.
@@ -101,19 +108,24 @@ const App: React.FC = () => {
     setPlaybackIndex(0);
     setIsSpeaking(false);
     setProcessedSvgContent('');
+    alog('Generate clicked', { topicLen: topic.length, limitThinking });
     
     audioPlayer.current?.disconnect();
     audioPlayer.current = new GeminiLiveAudioService();
     
     // Pre-warm the audio service while Gemini is thinking
     try {
+        alog('Pre-warming audio service...');
         await audioPlayer.current.preWarmForQuestion();
+        alog('Pre-warm done');
     } catch (err) {
-        console.warn('Pre-warming audio service failed:', err);
+        awarn('Pre-warming audio service failed:', err);
     }
     
     try {
+        alog('Connecting live audio...');
         await audioPlayer.current.connect();
+        alog('Connected live audio');
     } catch (err) {
         setError("Failed to connect to the audio service. Please check your API key and network connection.");
         setIsLoading(false);
@@ -127,18 +139,20 @@ const App: React.FC = () => {
       await generateSvgForTopicStream(topic, limitThinking, (chunk) => {
         accumulatedRawContent += chunk;
         const parts = accumulatedRawContent.split(PART_SEPARATOR).map(p => p.trim()).filter(Boolean);
+        alog('stream chunk', { chunkLen: chunk.length, partsCount: parts.length });
         setTutorialParts(parts);
       });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
       setError(`Failed to generate SVG. ${errorMessage}`);
-      console.error(err);
+      aerr('generateSvgForTopicStream error', err);
     } finally {
         setIsLoading(false);
         setIsStreamingContent(false);
         if (accumulatedRawContent && tutorialParts.length === 0 && !error) {
              const parts = accumulatedRawContent.split(PART_SEPARATOR).map(p => p.trim()).filter(Boolean);
              if (parts.length > 0) {
+                alog('finalize parts after stream', { parts: parts.length });
                 setTutorialParts(parts);
              } else {
                 setError("The model did not return a valid tutorial format. Please try again.");
@@ -172,6 +186,15 @@ const App: React.FC = () => {
   useEffect(() => {
     // Start processing as soon as we have parts, don't wait for streaming to complete
     if (error || isSpeaking || playbackIndex >= tutorialParts.length) {
+        if (APP_DEBUG) {
+            alog('playback guard', {
+                error: !!error,
+                isSpeaking,
+                playbackIndex,
+                parts: tutorialParts.length,
+                isStreamingContent
+            });
+        }
         return;
     }
     
@@ -184,23 +207,37 @@ const App: React.FC = () => {
     if (!currentPart) return;
     
     const isSvgPart = currentPart.trim().startsWith('<');
+    // Do not speak a text part until it's sealed by the next PART_SEPARATOR
+    // i.e., until the next part exists or streaming is finished.
+    if (!isSvgPart) {
+        const isSealed = (playbackIndex < tutorialParts.length - 1) || !isStreamingContent;
+        if (!isSealed) {
+            alog('waiting for sealed text part', { index: playbackIndex, parts: tutorialParts.length });
+            return;
+        }
+    }
+    alog('process part', { index: playbackIndex, isSvgPart, preview: currentPart.slice(0, 80) });
 
     const processPart = async () => {
         if (!isMounted.current) return;
 
         if (isSvgPart) {
+            alog('advance on SVG part', { index: playbackIndex });
             setPlaybackIndex(prev => prev + 1);
         } else {
             setIsSpeaking(true);
             try {
+                alog('speak start', { index: playbackIndex, len: currentPart.length });
                 await audioPlayer.current?.speak(currentPart);
+                alog('speak done', { index: playbackIndex });
             } catch (e) {
-                console.error("Error speaking text:", e);
+                aerr('Error speaking text', e);
                 // Optionally set an error state here or just continue
             } finally {
                 if (isMounted.current) {
                     setIsSpeaking(false);
                     setPlaybackIndex(prev => prev + 1);
+                    alog('advance after speak', { nextIndex: playbackIndex + 1 });
                 }
             }
         }
@@ -212,11 +249,13 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (accumulatedSvg) {
+        alog('process SVG combine', { playbackIndex, parts: tutorialParts.length });
         processSvgWithDynamicIcons(accumulatedSvg, iconCache).then(processed => {
             const cleaned = processed
                 .replace(/width="960"/, 'width="100%"')
                 .replace(/height="600"/, 'height="100%"');
             setProcessedSvgContent(cleaned);
+            alog('svg processed');
         });
     } else {
         setProcessedSvgContent('');
