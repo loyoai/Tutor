@@ -7,9 +7,10 @@ interface TopicInputProps {
   isLoading: boolean;
   limitThinking: boolean;
   setLimitThinking: (limit: boolean) => void;
+  buttonLabel?: string;
 }
 
-export const TopicInput: React.FC<TopicInputProps> = ({ topic, setTopic, onSubmit, isLoading, limitThinking, setLimitThinking }) => {
+export const TopicInput: React.FC<TopicInputProps> = ({ topic, setTopic, onSubmit, isLoading, limitThinking, setLimitThinking, buttonLabel }) => {
   
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter' && !isLoading) {
@@ -43,7 +44,7 @@ export const TopicInput: React.FC<TopicInputProps> = ({ topic, setTopic, onSubmi
               Generating...
             </>
           ) : (
-            'Generate SVG'
+            buttonLabel || 'Generate SVG'
           )}
         </button>
       </div>

@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Chat } from '@google/genai';
 
 const SYSTEM_PROMPT = `You are an expert visual designer and a master tutor. Your goal is to create a beautiful, minimal SVG diagram while teaching the user about a complex topic. You will do this by building the SVG piece by piece and explaining the concept behind each piece.
 
@@ -79,4 +79,75 @@ export const generateSvgForTopicStream = async (
     console.error("Error calling Gemini API:", error);
     throw new Error("Could not connect to the generative AI service.");
   }
+};
+
+// --- Conversational follow-ups (official Gemini chat) ---
+
+let chatSession: Chat | null = null;
+let aiInstance: GoogleGenAI | null = null;
+
+const getAi = (): GoogleGenAI => {
+  if (!process.env.API_KEY) {
+    throw new Error('API_KEY environment variable is not set.');
+  }
+  if (!aiInstance) {
+    aiInstance = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  }
+  return aiInstance;
+};
+
+/**
+ * Creates (or replaces) a chat session seeded with the initial exchange.
+ * Use this immediately after the first generation so follow-up questions
+ * keep prior context the official Gemini way.
+ */
+export const seedChatFromInitialExchange = async (
+  userPrompt: string,
+  modelResponse: string,
+  limitThinking: boolean
+): Promise<void> => {
+  const ai = getAi();
+  const config: { systemInstruction: string; thinkingConfig?: object } = {
+    systemInstruction: SYSTEM_PROMPT,
+  };
+  if (limitThinking) {
+    config.thinkingConfig = { thinkingBudget: 512 };
+  }
+
+  chatSession = ai.chats.create({
+    model: 'gemini-2.5-pro',
+    config,
+    history: [
+      { role: 'user', parts: [{ text: userPrompt }] },
+      { role: 'model', parts: [{ text: modelResponse }] },
+    ],
+  });
+};
+
+/**
+ * Sends a follow-up question using the persistent chat session. Streams text chunks.
+ * If a session does not exist, this throws – callers should seed first.
+ */
+export const sendFollowUpStream = async (
+  question: string,
+  onStream: (chunk: string) => void
+): Promise<void> => {
+  if (!chatSession) {
+    throw new Error('No active chat session. Seed the chat after initial generation.');
+  }
+
+  try {
+    const stream = await chatSession.sendMessageStream({ message: question });
+    for await (const chunk of stream) {
+      onStream(chunk.text);
+    }
+  } catch (error) {
+    console.error('Error in follow-up send:', error);
+    throw new Error('Could not send follow-up to the generative AI service.');
+  }
+};
+
+/** Clears the in-memory chat session. */
+export const resetChat = (): void => {
+  chatSession = null;
 };

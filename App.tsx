@@ -3,7 +3,7 @@ import { Header } from './components/Header';
 import { TopicInput } from './components/TopicInput';
 import { SvgDisplay } from './components/SvgDisplay';
 import { RawOutputDisplay } from './components/RawOutputDisplay';
-import { generateSvgForTopicStream } from './services/geminiService';
+import { generateSvgForTopicStream, seedChatFromInitialExchange, sendFollowUpStream, resetChat } from './services/geminiService';
 import { GeminiLiveAudioService } from './services/geminiLiveAudioService';
 
 const PART_SEPARATOR = '---PART_SEPARATOR---';
@@ -84,6 +84,9 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [limitThinking, setLimitThinking] = useState<boolean>(false);
   const [isStreamingContent, setIsStreamingContent] = useState<boolean>(false);
+  const [chatReady, setChatReady] = useState<boolean>(false);
+  const [initialRawOutput, setInitialRawOutput] = useState<string>('');
+  const [followUps, setFollowUps] = useState<Array<{ q: string; a: string }>>([]);
   const iconCache = useRef<Record<string, string>>({});
   const audioPlayer = useRef<GeminiLiveAudioService | null>(null);
   const isMounted = useRef(true);
@@ -154,12 +157,53 @@ const App: React.FC = () => {
              if (parts.length > 0) {
                 alog('finalize parts after stream', { parts: parts.length });
                 setTutorialParts(parts);
+                setInitialRawOutput(accumulatedRawContent);
+                try {
+                  await seedChatFromInitialExchange(topic, accumulatedRawContent, limitThinking);
+                  setChatReady(true);
+                } catch (e) {
+                  awarn('Failed to seed chat from initial exchange; follow-ups disabled.', e);
+                  setChatReady(false);
+                }
              } else {
                 setError("The model did not return a valid tutorial format. Please try again.");
              }
         }
     }
-  }, [topic, limitThinking]);
+  }, [topic, limitThinking, tutorialParts.length, error]);
+
+  const handleFollowUp = useCallback(async () => {
+    const question = topic.trim();
+    if (!question) return;
+    if (!chatReady) {
+      setError('Follow-ups are unavailable until after the first generation.');
+      return;
+    }
+    setIsLoading(true);
+    setError(null);
+    try {
+      let answerAccum = '';
+      await sendFollowUpStream(question, (chunk) => {
+        answerAccum += chunk;
+      });
+      setFollowUps(prev => [...prev, { q: question, a: answerAccum }]);
+      // Speak the answer after it’s complete to keep audio smooth
+      try {
+        setIsSpeaking(true);
+        await audioPlayer.current?.speak(answerAccum);
+      } catch (e) {
+        awarn('Speaking follow-up failed', e);
+      } finally {
+        setIsSpeaking(false);
+      }
+      setTopic('');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to send follow-up.';
+      setError(msg);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [topic, chatReady]);
 
   const accumulatedSvg = useMemo(() => {
     const svgSnippets: string[] = [];
@@ -290,10 +334,11 @@ const App: React.FC = () => {
         <TopicInput
           topic={topic}
           setTopic={setTopic}
-          onSubmit={handleGenerateSvg}
+          onSubmit={chatReady ? handleFollowUp : handleGenerateSvg}
           isLoading={isLoading}
           limitThinking={limitThinking}
           setLimitThinking={setLimitThinking}
+          buttonLabel={chatReady ? 'Ask Follow‑up' : 'Generate SVG'}
         />
         <SvgDisplay
           svgContent={processedSvgContent}
@@ -303,6 +348,19 @@ const App: React.FC = () => {
           isSpeaking={isSpeaking}
         />
         <RawOutputDisplay tutorialParts={tutorialParts} />
+        {followUps.length > 0 && (
+          <div className="w-full max-w-5xl mt-2">
+            <h3 className="text-base font-semibold text-gray-400 mb-2 px-1">Follow‑up Q&A</h3>
+            <div className="bg-gray-950/50 border border-gray-700 rounded-lg p-4 space-y-4">
+              {followUps.map((f, i) => (
+                <div key={i} className="text-sm">
+                  <div className="text-gray-300"><span className="font-semibold text-purple-300">You:</span> {f.q}</div>
+                  <div className="text-gray-400 mt-1 whitespace-pre-wrap"><span className="font-semibold text-green-300">Gemini:</span> {f.a}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <footer className="text-center mt-auto py-4">
             <p className="text-gray-500 text-sm">Powered by Gemini 2.5 Flash</p>
         </footer>
