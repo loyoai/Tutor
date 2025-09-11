@@ -140,9 +140,11 @@ const App: React.FC = () => {
     
     try {
       await generateSvgForTopicStream(topic, limitThinking, (chunk) => {
+        // Guard against undefined/empty chunks from the stream.
+        if (typeof chunk !== 'string' || chunk.length === 0) return;
         accumulatedRawContent += chunk;
         const parts = accumulatedRawContent.split(PART_SEPARATOR).map(p => p.trim()).filter(Boolean);
-        alog('stream chunk', { chunkLen: chunk.length, partsCount: parts.length });
+        alog('stream chunk', { chunkLen: typeof chunk === 'string' ? chunk.length : 0, partsCount: parts.length });
         setTutorialParts(parts);
       });
     } catch (err) {

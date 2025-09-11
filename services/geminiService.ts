@@ -54,30 +54,40 @@ export const generateSvgForTopicStream = async (
     throw new Error("API_KEY environment variable is not set.");
   }
 
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    
-    const config: { systemInstruction: string; thinkingConfig?: object } = {
-      systemInstruction: SYSTEM_PROMPT,
-    };
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-    if (limitThinking) {
-      config.thinkingConfig = { thinkingBudget: 512 };
-    }
-    
-    const responseStream = await ai.models.generateContentStream({
+  const config: { systemInstruction: string; thinkingConfig?: object } = {
+    systemInstruction: SYSTEM_PROMPT,
+  };
+
+  if (limitThinking) {
+    config.thinkingConfig = { thinkingBudget: 512 };
+  }
+
+  // First, establish the stream. If this fails, surface a clear API error.
+  let responseStream: AsyncIterable<any>;
+  try {
+    responseStream = await ai.models.generateContentStream({
       model: 'gemini-2.5-pro',
       contents: topic,
-      config: config,
+      config,
     });
+  } catch (apiErr) {
+    console.error('Gemini API request failed:', apiErr);
+    throw new Error('Could not connect to the generative AI service.');
+  }
 
+  // Then, process the stream. If the UI handler throws, propagate its real cause.
+  try {
     for await (const chunk of responseStream) {
-      onStream(chunk.text);
+      // Some stream events may not contain text; coerce to an empty string.
+      const text = (chunk && typeof chunk.text === 'string') ? chunk.text : '';
+      onStream(text);
     }
-    
-  } catch (error) {
-    console.error("Error calling Gemini API:", error);
-    throw new Error("Could not connect to the generative AI service.");
+  } catch (handlerErr) {
+    console.error('Stream processing failed:', handlerErr);
+    // Do not mask handler errors as connectivity problems.
+    throw handlerErr instanceof Error ? handlerErr : new Error('Stream handler failed');
   }
 };
 
@@ -139,7 +149,8 @@ export const sendFollowUpStream = async (
   try {
     const stream = await chatSession.sendMessageStream({ message: question });
     for await (const chunk of stream) {
-      onStream(chunk.text);
+      const text = (chunk && typeof chunk.text === 'string') ? chunk.text : '';
+      if (text) onStream(text);
     }
   } catch (error) {
     console.error('Error in follow-up send:', error);
