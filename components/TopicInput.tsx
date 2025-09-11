@@ -1,17 +1,29 @@
 import React from 'react';
 
 interface TopicInputProps {
+  /** Current input value; prompt or RAW LLM text depending on mode. */
   topic: string;
+  /** Updates the input value. */
   setTopic: (topic: string) => void;
+  /** Submit handler for the current mode. */
   onSubmit: () => void;
+  /** Disable input/submit when true. */
   isLoading: boolean;
+  /** Controls Gemini thinking budget (prompt mode only). */
   limitThinking: boolean;
+  /** Updates the thinking limit (prompt mode only). */
   setLimitThinking: (limit: boolean) => void;
+  /** Optional submit button label. */
   buttonLabel?: string;
+  /** Whether to show the thinking limit toggle. */
   showLimitThinking?: boolean;
+  /** Input mode: 'prompt' to call Gemini, 'raw' to process text directly. */
+  mode: 'prompt' | 'raw';
+  /** Update the input mode. */
+  setMode: (mode: 'prompt' | 'raw') => void;
 }
 
-export const TopicInput: React.FC<TopicInputProps> = ({ topic, setTopic, onSubmit, isLoading, limitThinking, setLimitThinking, buttonLabel, showLimitThinking = true }) => {
+export const TopicInput: React.FC<TopicInputProps> = ({ topic, setTopic, onSubmit, isLoading, limitThinking, setLimitThinking, buttonLabel, showLimitThinking = true, mode, setMode }) => {
   
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !isLoading) {
@@ -20,14 +32,40 @@ export const TopicInput: React.FC<TopicInputProps> = ({ topic, setTopic, onSubmi
     }
   };
   
+  const placeholder = mode === 'prompt'
+    ? 'What do you want to build?'
+    : 'Paste RAW LLM text here (use ---PART_SEPARATOR--- between parts)';
+  
   return (
     <div className="w-full flex flex-col items-stretch gap-2">
+      <div className="flex items-center justify-between mb-1">
+        <div className="inline-flex rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+          <button
+            type="button"
+            onClick={() => setMode('prompt')}
+            disabled={isLoading}
+            className={`px-3 py-1.5 text-sm ${mode === 'prompt' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-50'}`}
+            aria-pressed={mode === 'prompt'}
+          >
+            Prompt
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('raw')}
+            disabled={isLoading}
+            className={`px-3 py-1.5 text-sm ${mode === 'raw' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-50'}`}
+            aria-pressed={mode === 'raw'}
+          >
+            RAW LLM
+          </button>
+        </div>
+      </div>
       <div className="relative">
         <textarea
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="What do you want to build?"
+          placeholder={placeholder}
           rows={4}
           className="w-full pr-12 pl-4 py-4 min-h-[140px] bg-white border border-gray-200 rounded-3xl focus:ring-2 focus:ring-black focus:outline-none transition duration-200 text-base text-gray-900 placeholder-gray-500 shadow-sm resize-none"
           disabled={isLoading}

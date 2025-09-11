@@ -87,7 +87,7 @@ export const generateSvgForTopicStream = async (
   let responseStream: AsyncIterable<any>;
   try {
     responseStream = await ai.models.generateContentStream({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-pro',
       contents: topic,
       config,
     });

@@ -102,6 +102,7 @@ const App: React.FC = () => {
   const [chatReady, setChatReady] = useState<boolean>(false);
   const [initialRawOutput, setInitialRawOutput] = useState<string>('');
   const [followUps, setFollowUps] = useState<Array<{ q: string; a: string }>>([]);
+  const [inputMode, setInputMode] = useState<'prompt' | 'raw'>('prompt');
   const iconCache = useRef<Record<string, string>>({});
   const audioPlayer = useRef<GeminiLiveAudioService | null>(null);
   const isMounted = useRef(true);
@@ -147,8 +148,31 @@ const App: React.FC = () => {
         await audioPlayer.current.connect();
         alog('Connected live audio');
     } catch (err) {
-        setError("Failed to connect to the audio service. Please check your API key and network connection.");
+        setError('Failed to connect to the audio service. Please check your API key and network connection.');
         setIsLoading(false);
+        return;
+    }
+
+    // RAW mode: skip Gemini call; directly process provided text
+    if (inputMode === 'raw') {
+        try {
+          alog('RAW mode: processing provided content');
+          const accumulatedRawContent = topic;
+          const parts = accumulatedRawContent.split(PART_SEPARATOR).map(p => p.trim()).filter(Boolean);
+          if (parts.length === 0) {
+            setError('RAW text must contain at least one part. Use ---PART_SEPARATOR--- between parts.');
+          } else {
+            setTutorialParts(parts);
+            setInitialRawOutput(accumulatedRawContent);
+            setChatReady(false);
+          }
+        } catch (err) {
+          aerr('Error processing RAW content', err);
+          setError('Failed to process RAW content.');
+        } finally {
+          setIsStreamingContent(false);
+          setIsLoading(false);
+        }
         return;
     }
 
@@ -189,7 +213,7 @@ const App: React.FC = () => {
              }
         }
     }
-  }, [topic, limitThinking, tutorialParts.length, error]);
+  }, [topic, limitThinking, tutorialParts.length, error, inputMode]);
 
   const handleFollowUp = useCallback(async () => {
     const question = topic.trim();
@@ -373,12 +397,20 @@ const App: React.FC = () => {
               <TopicInput
                 topic={topic}
                 setTopic={setTopic}
-                onSubmit={chatReady ? handleFollowUp : handleGenerateSvg}
+                onSubmit={(chatReady && inputMode === 'prompt') ? handleFollowUp : handleGenerateSvg}
                 isLoading={isLoading}
                 limitThinking={limitThinking}
                 setLimitThinking={setLimitThinking}
-                buttonLabel={chatReady ? 'Ask Follow‑up' : 'Generate'}
+                buttonLabel={(chatReady && inputMode === 'prompt') ? 'Ask Follow‑up' : 'Generate'}
                 showLimitThinking={false}
+                mode={inputMode}
+                setMode={(m) => {
+                  setInputMode(m);
+                  if (m === 'raw') {
+                    // Disable follow-ups when entering RAW mode
+                    setChatReady(false);
+                  }
+                }}
               />
             </div>
           </section>
