@@ -181,29 +181,35 @@ const App: React.FC = () => {
       setError('Follow-ups are unavailable until after the first generation.');
       return;
     }
+
+    // Clear canvas and reset playback state so a new SVG renders from scratch
     setIsLoading(true);
     setError(null);
+    setTutorialParts([]);
+    setPlaybackIndex(0);
+    setIsSpeaking(false);
+    setProcessedSvgContent('');
+
+    let accumulated = '';
+    setIsStreamingContent(true);
     try {
-      let answerAccum = '';
       await sendFollowUpStream(question, (chunk) => {
-        answerAccum += chunk;
+        if (typeof chunk !== 'string' || chunk.length === 0) return;
+        accumulated += chunk;
+        const parts = accumulated.split(PART_SEPARATOR).map(p => p.trim()).filter(Boolean);
+        alog('stream chunk (follow-up)', { chunkLen: chunk.length, partsCount: parts.length });
+        setTutorialParts(parts);
       });
-      setFollowUps(prev => [...prev, { q: question, a: answerAccum }]);
-      // Speak the answer after it’s complete to keep audio smooth
-      try {
-        setIsSpeaking(true);
-        await audioPlayer.current?.speak(answerAccum);
-      } catch (e) {
-        awarn('Speaking follow-up failed', e);
-      } finally {
-        setIsSpeaking(false);
-      }
+
+      // Log the Q&A transcript for the panel
+      setFollowUps(prev => [...prev, { q: question, a: accumulated }]);
       setTopic('');
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to send follow-up.';
       setError(msg);
     } finally {
       setIsLoading(false);
+      setIsStreamingContent(false);
     }
   }, [topic, chatReady]);
 
