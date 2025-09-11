@@ -89,6 +89,8 @@ interface QueuedSpeechRequest {
   nextStartAt?: number;        // absolute AudioContext time for next chunk
   finishTimer?: number;        // timeout id for idle-finish checks
   lastChunkTs?: number;        // ms timestamp of last received audio chunk
+  onStart?: () => void;        // callback when first audio chunk schedules
+  hasStarted?: boolean;        // internal flag to ensure onStart fires once
 }
 
 export class GeminiLiveAudioService {
@@ -305,6 +307,7 @@ export class GeminiLiveAudioService {
         request.isPlaying = true;
         request.scheduledChunkCount = 0;
         request.endedChunkCount = 0;
+        request.hasStarted = false;
         if (this.audioContext) {
             // Prime cursor slightly in the future to avoid immediate underrun
             const now = this.audioContext.currentTime;
@@ -350,6 +353,11 @@ export class GeminiLiveAudioService {
                 (this.outputNode || ctx.destination) && source.connect(this.outputNode || ctx.destination);
 
                 const startAt = Math.max(request.nextStartAt ?? ctx.currentTime + 0.01, ctx.currentTime + 0.005);
+                // Fire onStart exactly once when the first chunk schedules
+                if (!request.hasStarted) {
+                    request.hasStarted = true;
+                    try { request.onStart && request.onStart(); } catch {}
+                }
                 source.start(startAt);
                 request.nextStartAt = startAt + buffer.duration;
                 log('chunk-scheduled', {
@@ -398,7 +406,7 @@ export class GeminiLiveAudioService {
         }
     }
 
-    public speak(text: string): Promise<void> {
+    public speak(text: string, opts?: { onAudioStart?: () => void }): Promise<void> {
         return new Promise((resolve, reject) => {
             if (!text || text.trim() === '') {
                 return resolve();
@@ -412,7 +420,8 @@ export class GeminiLiveAudioService {
                 isPlaying: false,
                 scheduledChunkCount: 0,
                 endedChunkCount: 0,
-                isComplete: false
+                isComplete: false,
+                onStart: opts?.onAudioStart
             };
             
             log('enqueue speak', {

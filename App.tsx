@@ -1,8 +1,10 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { TopicInput } from './components/TopicInput';
-import { SvgDisplay } from './components/SvgDisplay';
-import { generateSvgForTopicStream, seedChatFromInitialExchange, sendFollowUpStream, resetChat } from './services/geminiService';
-import { GeminiLiveAudioService } from './services/geminiLiveAudioService';
+// import { TopicInput } from './components/TopicInput';
+import { SvgDisplay } from '@/components/SvgDisplay';
+import { generateSvgForTopicStream, seedChatFromInitialExchange, sendFollowUpStream, resetChat } from '@/services/geminiService';
+import { GeminiLiveAudioService } from '@/services/geminiLiveAudioService';
+import { FlashTutorService } from '@/services/flashTutorService';
+import { FlashAgentPanel } from '@/components/FlashAgentPanel';
 
 const PART_SEPARATOR = '---PART_SEPARATOR---';
 
@@ -103,22 +105,45 @@ const App: React.FC = () => {
   const [initialRawOutput, setInitialRawOutput] = useState<string>('');
   const [followUps, setFollowUps] = useState<Array<{ q: string; a: string }>>([]);
   const [inputMode, setInputMode] = useState<'prompt' | 'raw'>('prompt');
+  const [lessonCompletedTick, setLessonCompletedTick] = useState(0);
+  const [flashStarted, setFlashStarted] = useState(false);
+  const [flashInitialGoal, setFlashInitialGoal] = useState<string>('');
+  const flashServiceRef = useRef<FlashTutorService | null>(null);
   const iconCache = useRef<Record<string, string>>({});
   const audioPlayer = useRef<GeminiLiveAudioService | null>(null);
   const isMounted = useRef(true);
 
   useEffect(() => {
     isMounted.current = true;
+    if (!audioPlayer.current) {
+      try {
+        audioPlayer.current = new GeminiLiveAudioService();
+      } catch (e) {
+        console.warn('Failed to init TTS service', e);
+      }
+    }
     return () => {
         isMounted.current = false;
         audioPlayer.current?.disconnect();
     };
   }, []);
 
+  // Initialize Flash service once
+  useEffect(() => {
+    if (!flashServiceRef.current) {
+      try {
+        flashServiceRef.current = new FlashTutorService();
+      } catch (e) {
+        console.warn('Failed to init FlashTutorService', e);
+      }
+    }
+  }, []);
+
   // No dynamic sizing; we use fixed 960x600 canvas
 
-  const handleGenerateSvg = useCallback(async () => {
-    if (!topic.trim()) {
+  const handleGenerateSvg = useCallback(async (overrideTopic?: string) => {
+    const requestTopic = (overrideTopic ?? topic) || '';
+    if (!requestTopic.trim()) {
       setError('Please enter a topic.');
       return;
     }
@@ -129,35 +154,23 @@ const App: React.FC = () => {
     setPlaybackIndex(0);
     setIsSpeaking(false);
     setProcessedSvgContent('');
-    alog('Generate clicked', { topicLen: topic.length, limitThinking });
+    alog('Generate clicked', { topicLen: requestTopic.length, limitThinking });
     
-    audioPlayer.current?.disconnect();
-    audioPlayer.current = new GeminiLiveAudioService();
-    
-    // Pre-warm the audio service while Gemini is thinking
+    // Ensure one shared audio session is warmed/connected
     try {
         alog('Pre-warming audio service...');
-        await audioPlayer.current.preWarmForQuestion();
-        alog('Pre-warm done');
+        await audioPlayer.current?.preWarmForQuestion();
+        await audioPlayer.current?.connect();
+        alog('Audio ready');
     } catch (err) {
-        awarn('Pre-warming audio service failed:', err);
-    }
-    
-    try {
-        alog('Connecting live audio...');
-        await audioPlayer.current.connect();
-        alog('Connected live audio');
-    } catch (err) {
-        setError('Failed to connect to the audio service. Please check your API key and network connection.');
-        setIsLoading(false);
-        return;
+        awarn('Audio service not ready:', err);
     }
 
     // RAW mode: skip Gemini call; directly process provided text
     if (inputMode === 'raw') {
         try {
           alog('RAW mode: processing provided content');
-          const accumulatedRawContent = topic;
+          const accumulatedRawContent = requestTopic;
           const parts = accumulatedRawContent.split(PART_SEPARATOR).map(p => p.trim()).filter(Boolean);
           if (parts.length === 0) {
             setError('RAW text must contain at least one part. Use ---PART_SEPARATOR--- between parts.');
@@ -180,7 +193,7 @@ const App: React.FC = () => {
     setIsStreamingContent(true);
     
     try {
-      await generateSvgForTopicStream(topic, limitThinking, (chunk) => {
+      await generateSvgForTopicStream(requestTopic, limitThinking, (chunk) => {
         // Guard against undefined/empty chunks from the stream.
         if (typeof chunk !== 'string' || chunk.length === 0) return;
         accumulatedRawContent += chunk;
@@ -202,7 +215,7 @@ const App: React.FC = () => {
                 setTutorialParts(parts);
                 setInitialRawOutput(accumulatedRawContent);
                 try {
-                  await seedChatFromInitialExchange(topic, accumulatedRawContent, limitThinking);
+                  await seedChatFromInitialExchange(requestTopic, accumulatedRawContent, limitThinking);
                   setChatReady(true);
                 } catch (e) {
                   awarn('Failed to seed chat from initial exchange; follow-ups disabled.', e);
@@ -364,7 +377,8 @@ const App: React.FC = () => {
   useEffect(() => {
     if (accumulatedSvg) {
         alog('process SVG combine', { playbackIndex, parts: tutorialParts.length });
-        processSvgWithDynamicIcons(accumulatedSvg, iconCache, 960, 600).then(processed => {
+        // Scale via CSS; do not force fixed 960x600 in markup
+        processSvgWithDynamicIcons(accumulatedSvg, iconCache).then(processed => {
             setProcessedSvgContent(processed);
             alog('svg processed');
         });
@@ -373,49 +387,98 @@ const App: React.FC = () => {
     }
   }, [accumulatedSvg]);
 
+  // Detect lesson completion (no streaming, not speaking, all parts consumed)
+  useEffect(() => {
+    if (
+      tutorialParts.length > 0 &&
+      !isStreamingContent &&
+      !isSpeaking &&
+      playbackIndex >= tutorialParts.length
+    ) {
+      // Signal completion (debounced by requestAnimationFrame to avoid rapid repeats)
+      requestAnimationFrame(() => setLessonCompletedTick((x) => x + 1));
+    }
+  }, [tutorialParts.length, isStreamingContent, isSpeaking, playbackIndex]);
+
+  // Start a lesson from Flash agent payload
+  const startLessonFromFlash = useCallback(
+    (payload: { concept: string; userLevel?: string; examples?: string[]; connectionToPriorKnowledge?: string }) => {
+      const parts: string[] = [];
+      parts.push(`Concept: ${payload.concept}`);
+      if (payload.userLevel) parts.push(`Learner level: ${payload.userLevel}`);
+      if (payload.connectionToPriorKnowledge) parts.push(`Connect to: ${payload.connectionToPriorKnowledge}`);
+      if (payload.examples && payload.examples.length) parts.push(`Examples: ${payload.examples.join(', ')}`);
+      const lessonPrompt = `Create an engaging, step-by-step tutorial for the following. Focus on very small DRAW/EXPLAIN steps as instructed.\n\n${parts.join('\n')}`;
+      setTopic(lessonPrompt);
+      // Kick off generation on the right with the prompt directly
+      handleGenerateSvg(lessonPrompt);
+    },
+    [handleGenerateSvg]
+  );
+
   return (
     <div className="h-screen overflow-hidden flex flex-col bg-[#FBFAF8] text-gray-900 font-sans">
       <header className="px-4 py-3">
         <h1 className="text-sm font-medium text-gray-700">Tutor</h1>
       </header>
       <main className="flex-1 px-4 pb-4 overflow-hidden">
-        <div className="w-full h-full grid grid-cols-3 gap-4">
-          {/* Left: empty column. Right: content. */}
-          <section className="col-span-1 h-full" />
-          <section className="col-span-2 h-full flex flex-col min-h-0 gap-4">
-            <div className="w-full h-[600px] rounded-2xl border border-gray-200 shadow-sm p-0 overflow-hidden bg-white flex items-center justify-center">
-              <div className="w-[960px] h-[600px]">
-                <SvgDisplay
-                  svgContent={processedSvgContent}
-                  isLoading={isLoading}
-                  error={error}
-                  hasStarted={tutorialParts.length > 0}
-                  isSpeaking={isSpeaking}
+        {!flashStarted ? (
+          // Landing page
+          <div className="w-full h-full flex items-center justify-center">
+            <div className="max-w-2xl w-full text-center">
+              <h2 className="text-4xl font-semibold">Learn anything</h2>
+              <p className="text-gray-600 mt-2">Tell me what you want to learn.</p>
+              <div className="mt-6">
+                <textarea
+                  rows={6}
+                  value={flashInitialGoal}
+                  onChange={(e) => setFlashInitialGoal(e.target.value)}
+                  placeholder="e.g., Basics of probability, How neural nets learn, The French Revolution…"
+                  className="w-full rounded-2xl border border-gray-200 p-4 focus:outline-none focus:ring-2 focus:ring-black bg-white"
                 />
+                <button
+                  onClick={() => {
+                    if (!flashInitialGoal.trim()) return;
+                    setFlashStarted(true);
+                  }}
+                  disabled={!flashInitialGoal.trim()}
+                  className="mt-4 w-full px-4 py-3 rounded-xl bg-black text-white disabled:opacity-50"
+                >
+                  Start learning
+                </button>
               </div>
             </div>
-            <div className="shrink-0">
-              <TopicInput
-                topic={topic}
-                setTopic={setTopic}
-                onSubmit={(chatReady && inputMode === 'prompt') ? handleFollowUp : handleGenerateSvg}
-                isLoading={isLoading}
-                limitThinking={limitThinking}
-                setLimitThinking={setLimitThinking}
-                buttonLabel={(chatReady && inputMode === 'prompt') ? 'Ask Follow‑up' : 'Generate'}
-                showLimitThinking={false}
-                mode={inputMode}
-                setMode={(m) => {
-                  setInputMode(m);
-                  if (m === 'raw') {
-                    // Disable follow-ups when entering RAW mode
-                    setChatReady(false);
-                  }
-                }}
-              />
-            </div>
-          </section>
-        </div>
+          </div>
+        ) : (
+          <div className="w-full h-full grid grid-cols-3 gap-4">
+            {/* Left: Flash agent panel */}
+            <section className="col-span-1 h-full">
+              {flashServiceRef.current && audioPlayer.current && (
+                <FlashAgentPanel
+                  service={flashServiceRef.current}
+                  onStartLesson={startLessonFromFlash}
+                  lessonCompletedTick={lessonCompletedTick}
+                  initialGoal={flashInitialGoal}
+                  tts={audioPlayer.current}
+                />
+              )}
+            </section>
+            {/* Right: SVG lesson player */}
+            <section className="col-span-2 h-full flex flex-col min-h-0 gap-4">
+              <div className="w-full h-full rounded-2xl border border-gray-200 shadow-sm p-0 overflow-hidden bg-white flex items-center justify-center">
+                <div className="w-full h-full">
+                  <SvgDisplay
+                    svgContent={processedSvgContent}
+                    isLoading={isLoading}
+                    error={error}
+                    hasStarted={tutorialParts.length > 0}
+                    isSpeaking={isSpeaking}
+                  />
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
       </main>
     </div>
   );

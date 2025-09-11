@@ -45,7 +45,7 @@ export const SvgDisplay: React.FC<SvgDisplayProps> = ({ svgContent, isLoading, e
     if (!hasStarted && !isLoading) return <InitialState />;
     if (svgContent) {
       return (
-        <div className="w-full h-full" dangerouslySetInnerHTML={{ __html: svgContent }} />
+        <div className="w-full h-full [&_svg]:w-full [&_svg]:h-full [&_svg]:max-w-full [&_svg]:max-h-full" dangerouslySetInnerHTML={{ __html: svgContent }} />
       );
     }
     return <div className="w-full h-full bg-white"></div>; // Placeholder while loading/text-only steps
