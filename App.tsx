@@ -380,7 +380,8 @@ const App: React.FC = () => {
       </header>
       <main className="flex-1 px-4 pb-4 overflow-hidden">
         <div className="w-full h-full grid grid-cols-3 gap-4">
-          {/* Left: content. Right: empty column. */}
+          {/* Left: empty column. Right: content. */}
+          <section className="col-span-1 h-full" />
           <section className="col-span-2 h-full flex flex-col min-h-0 gap-4">
             <div className="w-full h-[600px] rounded-2xl border border-gray-200 shadow-sm p-0 overflow-hidden bg-white flex items-center justify-center">
               <div className="w-[960px] h-[600px]">
@@ -414,7 +415,6 @@ const App: React.FC = () => {
               />
             </div>
           </section>
-          <section className="col-span-1 h-full" />
         </div>
       </main>
     </div>
