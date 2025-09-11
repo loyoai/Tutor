@@ -45,18 +45,15 @@ export const SvgDisplay: React.FC<SvgDisplayProps> = ({ svgContent, isLoading, e
     if (!hasStarted && !isLoading) return <InitialState />;
     if (svgContent) {
       return (
-        <div
-          className="w-full h-full"
-          dangerouslySetInnerHTML={{ __html: svgContent }}
-        />
+        <div className="w-full h-full" dangerouslySetInnerHTML={{ __html: svgContent }} />
       );
     }
-    return <div className="w-full h-full bg-gray-800/50"></div>; // Placeholder while loading/text-only steps
+    return <div className="w-full h-full bg-white"></div>; // Placeholder while loading/text-only steps
   };
 
   return (
-    <div className="w-full max-w-5xl flex flex-col gap-4 relative">
-        <div className="w-full bg-gray-800/50 border border-gray-700 rounded-lg shadow-lg aspect-[8/5] flex items-center justify-center p-4">
+    <div className="w-full h-full flex flex-col relative">
+        <div className="w-full h-full flex items-center justify-center">
           {renderSvgArea()}
         </div>
         {isSpeaking && (

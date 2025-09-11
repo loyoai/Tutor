@@ -1,8 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { Header } from './components/Header';
 import { TopicInput } from './components/TopicInput';
 import { SvgDisplay } from './components/SvgDisplay';
-import { RawOutputDisplay } from './components/RawOutputDisplay';
 import { generateSvgForTopicStream, seedChatFromInitialExchange, sendFollowUpStream, resetChat } from './services/geminiService';
 import { GeminiLiveAudioService } from './services/geminiLiveAudioService';
 
@@ -23,7 +21,9 @@ const aerr = (...args: any[]) => { if (APP_DEBUG) console.error('[App]', ats(), 
  */
 const processSvgWithDynamicIcons = async (
     svgString: string,
-    cache: React.MutableRefObject<Record<string, string>>
+    cache: React.MutableRefObject<Record<string, string>>,
+    targetWidth?: number,
+    targetHeight?: number
 ): Promise<string> => {
     // Regex to find all lucide-icon tags and extract their names
     const iconNameRegex = /<lucide-icon\s+name="([^"]+)"[^>]*\/?>/g;
@@ -61,7 +61,7 @@ const processSvgWithDynamicIcons = async (
     // Regex to find full lucide-icon tags to replace them with SVG <g> elements
     const fullIconRegex = /<lucide-icon\s+name="([^"]+)"\s+x="([^"]+)"\s+y="([^"]+)"\s+size="([^"]+)"\s+color="([^"]+)"\s*\/>/g;
 
-    return svgString.replace(fullIconRegex, (match, name, x, y, size, color) => {
+    let out = svgString.replace(fullIconRegex, (match, name, x, y, size, color) => {
         const iconData = cache.current[name];
         if (!iconData) {
             return `<!-- Lucide icon "${name}" failed to load -->`;
@@ -71,6 +71,21 @@ const processSvgWithDynamicIcons = async (
         const transform = `transform="translate(${x}, ${y}) scale(${scale}) translate(-12, -12)"`;
         return `<g ${transform} stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none">${iconData}</g>`;
     });
+
+    if (targetWidth && targetHeight) {
+        const w = Math.round(targetWidth);
+        const h = Math.round(targetHeight);
+        out = out.replace(/<svg([^>]*)>/, (_m, attrs) => {
+            let a = String(attrs);
+            if (/width="/.test(a)) a = a.replace(/width="[^"]*"/, `width="${w}"`);
+            else a = `${a} width="${w}"`;
+            if (/height="/.test(a)) a = a.replace(/height="[^"]*"/, `height="${h}"`);
+            else a = `${a} height="${h}"`;
+            return `<svg${a}>`;
+        });
+    }
+
+    return out;
 };
 
 
@@ -98,6 +113,8 @@ const App: React.FC = () => {
         audioPlayer.current?.disconnect();
     };
   }, []);
+
+  // No dynamic sizing; we use fixed 960x600 canvas
 
   const handleGenerateSvg = useCallback(async () => {
     if (!topic.trim()) {
@@ -323,11 +340,8 @@ const App: React.FC = () => {
   useEffect(() => {
     if (accumulatedSvg) {
         alog('process SVG combine', { playbackIndex, parts: tutorialParts.length });
-        processSvgWithDynamicIcons(accumulatedSvg, iconCache).then(processed => {
-            const cleaned = processed
-                .replace(/width="960"/, 'width="100%"')
-                .replace(/height="600"/, 'height="100%"');
-            setProcessedSvgContent(cleaned);
+        processSvgWithDynamicIcons(accumulatedSvg, iconCache, 960, 600).then(processed => {
+            setProcessedSvgContent(processed);
             alog('svg processed');
         });
     } else {
@@ -336,43 +350,41 @@ const App: React.FC = () => {
   }, [accumulatedSvg]);
 
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col items-center p-4 sm:p-6 lg:p-8 font-sans">
-      <div className="w-full max-w-5xl flex flex-col items-center gap-8">
-        <Header />
-        <TopicInput
-          topic={topic}
-          setTopic={setTopic}
-          onSubmit={chatReady ? handleFollowUp : handleGenerateSvg}
-          isLoading={isLoading}
-          limitThinking={limitThinking}
-          setLimitThinking={setLimitThinking}
-          buttonLabel={chatReady ? 'Ask Follow‑up' : 'Generate SVG'}
-        />
-        <SvgDisplay
-          svgContent={processedSvgContent}
-          isLoading={isLoading}
-          error={error}
-          hasStarted={tutorialParts.length > 0}
-          isSpeaking={isSpeaking}
-        />
-        <RawOutputDisplay tutorialParts={tutorialParts} />
-        {followUps.length > 0 && (
-          <div className="w-full max-w-5xl mt-2">
-            <h3 className="text-base font-semibold text-gray-400 mb-2 px-1">Follow‑up Q&A</h3>
-            <div className="bg-gray-950/50 border border-gray-700 rounded-lg p-4 space-y-4">
-              {followUps.map((f, i) => (
-                <div key={i} className="text-sm">
-                  <div className="text-gray-300"><span className="font-semibold text-purple-300">You:</span> {f.q}</div>
-                  <div className="text-gray-400 mt-1 whitespace-pre-wrap"><span className="font-semibold text-green-300">Gemini:</span> {f.a}</div>
-                </div>
-              ))}
+    <div className="h-screen overflow-hidden flex flex-col bg-[#FBFAF8] text-gray-900 font-sans">
+      <header className="px-4 py-3">
+        <h1 className="text-sm font-medium text-gray-700">Tutor</h1>
+      </header>
+      <main className="flex-1 px-4 pb-4 overflow-hidden">
+        <div className="w-full h-full grid grid-cols-3 gap-4">
+          {/* Left: content. Right: empty column. */}
+          <section className="col-span-2 h-full flex flex-col min-h-0 gap-4">
+            <div className="w-full h-[600px] rounded-2xl border border-gray-200 shadow-sm p-0 overflow-hidden bg-white flex items-center justify-center">
+              <div className="w-[960px] h-[600px]">
+                <SvgDisplay
+                  svgContent={processedSvgContent}
+                  isLoading={isLoading}
+                  error={error}
+                  hasStarted={tutorialParts.length > 0}
+                  isSpeaking={isSpeaking}
+                />
+              </div>
             </div>
-          </div>
-        )}
-        <footer className="text-center mt-auto py-4">
-            <p className="text-gray-500 text-sm">Powered by Gemini 2.5 Flash</p>
-        </footer>
-      </div>
+            <div className="shrink-0">
+              <TopicInput
+                topic={topic}
+                setTopic={setTopic}
+                onSubmit={chatReady ? handleFollowUp : handleGenerateSvg}
+                isLoading={isLoading}
+                limitThinking={limitThinking}
+                setLimitThinking={setLimitThinking}
+                buttonLabel={chatReady ? 'Ask Follow‑up' : 'Generate'}
+                showLimitThinking={false}
+              />
+            </div>
+          </section>
+          <section className="col-span-1 h-full" />
+        </div>
+      </main>
     </div>
   );
 };
