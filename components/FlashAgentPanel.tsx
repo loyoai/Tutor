@@ -148,7 +148,7 @@ export const FlashAgentPanel: React.FC<FlashAgentPanelProps> = ({ service, onSta
     if (!currentEvent) return null;
     if (currentEvent.type === 'detailedLesson') {
       return (
-        <div className="text-sm text-gray-600">Generating lesson… We’ll continue after it finishes.</div>
+        <div className="text-sm text-gray-600 dark:text-gray-400">Generating lesson… We’ll continue after it finishes.</div>
       );
     }
     if (!controlsVisible) return null;
@@ -160,12 +160,12 @@ export const FlashAgentPanel: React.FC<FlashAgentPanelProps> = ({ service, onSta
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             placeholder="Type your thoughts…"
-            className="w-full rounded-xl border border-gray-200 p-3 focus:outline-none focus:ring-2 focus:ring-black"
+            className="w-full rounded-xl border border-gray-200 p-3 focus:outline-none focus:ring-2 focus:ring-black dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder-gray-400 dark:focus:ring-white"
           />
           <button
             onClick={() => submitAnswer('askOpenEndedQuestion', { answer: inputValue })}
             disabled={!inputValue.trim()}
-            className="mt-2 px-4 py-2 rounded-lg bg-black text-white disabled:opacity-50"
+            className="mt-2 px-4 py-2 rounded-lg bg-black text-white disabled:opacity-50 dark:bg-white dark:text-black"
           >
             Submit
           </button>
@@ -185,7 +185,7 @@ export const FlashAgentPanel: React.FC<FlashAgentPanelProps> = ({ service, onSta
                   onChange={() => { setSelectedOption(opt); submitAnswer('askMultipleChoiceQuestion', { selected: opt }); }}
                   className="h-4 w-4"
                 />
-                <span className="text-sm">{opt}</span>
+                <span className="text-sm dark:text-gray-200">{opt}</span>
               </label>
             ))}
           </div>
@@ -197,13 +197,13 @@ export const FlashAgentPanel: React.FC<FlashAgentPanelProps> = ({ service, onSta
         <div className="mt-4 flex items-center gap-3">
           <button
             onClick={() => submitAnswer('askTrueFalseQuestion', { answer: true })}
-            className="px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50"
+            className="px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
           >
             True
           </button>
           <button
             onClick={() => submitAnswer('askTrueFalseQuestion', { answer: false })}
-            className="px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50"
+            className="px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
           >
             False
           </button>

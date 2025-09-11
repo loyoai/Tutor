@@ -7,6 +7,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI SVG Generator</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      // Enable class-based dark mode so we can toggle via `html.dark`.
+      tailwind.config = { darkMode: 'class' };
+    </script>
+    <script>
+      // Prevent theme flash: set initial class before React mounts.
+      (function () {
+        try {
+          const saved = localStorage.getItem('theme');
+          const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          const isDark = saved ? saved === 'dark' : prefersDark;
+          if (isDark) document.documentElement.classList.add('dark');
+        } catch (_) {}
+      })();
+    </script>
   <script type="importmap">
 {
   "imports": {

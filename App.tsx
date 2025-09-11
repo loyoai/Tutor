@@ -5,6 +5,7 @@ import { generateSvgForTopicStream, seedChatFromInitialExchange, sendFollowUpStr
 import { GeminiLiveAudioService } from '@/services/geminiLiveAudioService';
 import { FlashTutorService } from '@/services/flashTutorService';
 import { FlashAgentPanel } from '@/components/FlashAgentPanel';
+import { ThemeToggle } from '@/components/ThemeToggle';
 
 const PART_SEPARATOR = '---PART_SEPARATOR---';
 
@@ -112,6 +113,24 @@ const App: React.FC = () => {
   const iconCache = useRef<Record<string, string>>({});
   const audioPlayer = useRef<GeminiLiveAudioService | null>(null);
   const isMounted = useRef(true);
+  const [isDark, setIsDark] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('theme');
+      if (saved === 'dark') return true;
+      if (saved === 'light') return false;
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    } catch {
+      return false;
+    }
+  });
+
+  // Apply/remove the top-level dark class
+  useEffect(() => {
+    const root = document.documentElement;
+    if (isDark) root.classList.add('dark');
+    else root.classList.remove('dark');
+    try { localStorage.setItem('theme', isDark ? 'dark' : 'light'); } catch {}
+  }, [isDark]);
 
   useEffect(() => {
     isMounted.current = true;
@@ -200,7 +219,7 @@ const App: React.FC = () => {
         const parts = accumulatedRawContent.split(PART_SEPARATOR).map(p => p.trim()).filter(Boolean);
         alog('stream chunk', { chunkLen: typeof chunk === 'string' ? chunk.length : 0, partsCount: parts.length });
         setTutorialParts(parts);
-      });
+      }, undefined, isDark ? 'dark' : 'light');
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
       setError(`Failed to generate SVG. ${errorMessage}`);
@@ -215,7 +234,7 @@ const App: React.FC = () => {
                 setTutorialParts(parts);
                 setInitialRawOutput(accumulatedRawContent);
                 try {
-                  await seedChatFromInitialExchange(requestTopic, accumulatedRawContent, limitThinking);
+                  await seedChatFromInitialExchange(requestTopic, accumulatedRawContent, limitThinking, undefined, isDark ? 'dark' : 'light');
                   setChatReady(true);
                 } catch (e) {
                   awarn('Failed to seed chat from initial exchange; follow-ups disabled.', e);
@@ -417,9 +436,10 @@ const App: React.FC = () => {
   );
 
   return (
-    <div className="h-screen overflow-hidden flex flex-col bg-[#FBFAF8] text-gray-900 font-sans">
-      <header className="px-4 py-3">
-        <h1 className="text-sm font-medium text-gray-700">Tutor</h1>
+    <div className="h-screen overflow-hidden flex flex-col bg-[#FBFAF8] text-gray-900 font-sans dark:bg-[#0B0F17] dark:text-gray-100">
+      <header className="px-4 py-3 flex items-center justify-between">
+        <h1 className="text-sm font-medium text-gray-700 dark:text-gray-300">Tutor</h1>
+        <ThemeToggle isDark={isDark} onToggle={() => setIsDark(d => !d)} />
       </header>
       <main className="flex-1 px-4 pb-4 overflow-hidden">
         {!flashStarted ? (
@@ -427,14 +447,14 @@ const App: React.FC = () => {
           <div className="w-full h-full flex items-center justify-center">
             <div className="max-w-2xl w-full text-center">
               <h2 className="text-4xl font-semibold">Learn anything</h2>
-              <p className="text-gray-600 mt-2">Tell me what you want to learn.</p>
+              <p className="text-gray-600 mt-2 dark:text-gray-400">Tell me what you want to learn.</p>
               <div className="mt-6">
                 <textarea
                   rows={6}
                   value={flashInitialGoal}
                   onChange={(e) => setFlashInitialGoal(e.target.value)}
                   placeholder="e.g., Basics of probability, How neural nets learn, The French Revolution…"
-                  className="w-full rounded-2xl border border-gray-200 p-4 focus:outline-none focus:ring-2 focus:ring-black bg-white"
+                  className="w-full rounded-2xl border border-gray-200 p-4 focus:outline-none focus:ring-2 focus:ring-black bg-white dark:bg-gray-900 dark:border-gray-700 dark:focus:ring-white"
                 />
                 <button
                   onClick={() => {
@@ -442,7 +462,7 @@ const App: React.FC = () => {
                     setFlashStarted(true);
                   }}
                   disabled={!flashInitialGoal.trim()}
-                  className="mt-4 w-full px-4 py-3 rounded-xl bg-black text-white disabled:opacity-50"
+                  className="mt-4 w-full px-4 py-3 rounded-xl bg-black text-white disabled:opacity-50 dark:bg-white dark:text-black"
                 >
                   Start learning
                 </button>
@@ -465,7 +485,7 @@ const App: React.FC = () => {
             </section>
             {/* Right: SVG lesson player */}
             <section className="col-span-2 h-full flex flex-col min-h-0 gap-4">
-              <div className="w-full h-full rounded-2xl border border-gray-200 shadow-sm p-0 overflow-hidden bg-white flex items-center justify-center">
+              <div className="w-full h-full rounded-2xl border border-gray-200 shadow-sm p-0 overflow-hidden bg-white flex items-center justify-center dark:bg-gray-900 dark:border-gray-700">
                 <div className="w-full h-full">
                   <SvgDisplay
                     svgContent={processedSvgContent}

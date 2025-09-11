@@ -39,12 +39,12 @@ export const TopicInput: React.FC<TopicInputProps> = ({ topic, setTopic, onSubmi
   return (
     <div className="w-full flex flex-col items-stretch gap-2">
       <div className="flex items-center justify-between mb-1">
-        <div className="inline-flex rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+        <div className="inline-flex rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm dark:bg-gray-900 dark:border-gray-700">
           <button
             type="button"
             onClick={() => setMode('prompt')}
             disabled={isLoading}
-            className={`px-3 py-1.5 text-sm ${mode === 'prompt' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-50'}`}
+            className={`px-3 py-1.5 text-sm ${mode === 'prompt' ? 'bg-gray-900 text-white dark:bg-white dark:text-black' : 'text-gray-700 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'}`}
             aria-pressed={mode === 'prompt'}
           >
             Prompt
@@ -53,7 +53,7 @@ export const TopicInput: React.FC<TopicInputProps> = ({ topic, setTopic, onSubmi
             type="button"
             onClick={() => setMode('raw')}
             disabled={isLoading}
-            className={`px-3 py-1.5 text-sm ${mode === 'raw' ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-50'}`}
+            className={`px-3 py-1.5 text-sm ${mode === 'raw' ? 'bg-gray-900 text-white dark:bg-white dark:text-black' : 'text-gray-700 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'}`}
             aria-pressed={mode === 'raw'}
           >
             RAW LLM
@@ -67,7 +67,7 @@ export const TopicInput: React.FC<TopicInputProps> = ({ topic, setTopic, onSubmi
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           rows={4}
-          className="w-full pr-12 pl-4 py-4 min-h-[140px] bg-white border border-gray-200 rounded-3xl focus:ring-2 focus:ring-black focus:outline-none transition duration-200 text-base text-gray-900 placeholder-gray-500 shadow-sm resize-none"
+          className="w-full pr-12 pl-4 py-4 min-h-[140px] bg-white border border-gray-200 rounded-3xl focus:ring-2 focus:ring-black focus:outline-none transition duration-200 text-base text-gray-900 placeholder-gray-500 shadow-sm resize-none dark:bg-gray-900 dark:border-gray-700 dark:text-gray-100 dark:placeholder-gray-400 dark:focus:ring-white"
           disabled={isLoading}
         />
         <button
@@ -75,7 +75,7 @@ export const TopicInput: React.FC<TopicInputProps> = ({ topic, setTopic, onSubmi
           aria-label={buttonLabel || 'Submit'}
           onClick={onSubmit}
           disabled={isLoading}
-          className="absolute right-4 bottom-4 h-10 w-10 rounded-full flex items-center justify-center text-gray-600 hover:text-gray-800 hover:bg-gray-100 disabled:text-gray-400"
+          className="absolute right-4 bottom-4 h-10 w-10 rounded-full flex items-center justify-center text-gray-600 hover:text-gray-800 hover:bg-gray-100 disabled:text-gray-400 dark:text-gray-300 dark:hover:text-white dark:hover:bg-gray-800"
         >
           {isLoading ? (
             <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -99,9 +99,9 @@ export const TopicInput: React.FC<TopicInputProps> = ({ topic, setTopic, onSubmi
             checked={limitThinking}
             onChange={(e) => setLimitThinking(e.target.checked)}
             disabled={isLoading}
-            className="h-4 w-4 rounded border-gray-300 bg-white text-black focus:ring-black cursor-pointer"
+            className="h-4 w-4 rounded border-gray-300 bg-white text-black focus:ring-black cursor-pointer dark:bg-gray-900 dark:border-gray-600 dark:text-white dark:focus:ring-white"
           />
-          <label htmlFor="limit-thinking" className="ml-2 text-sm text-gray-600 cursor-pointer select-none">
+          <label htmlFor="limit-thinking" className="ml-2 text-sm text-gray-600 cursor-pointer select-none dark:text-gray-400">
             Limit thinking budget (faster, potentially lower quality)
           </label>
         </div>
