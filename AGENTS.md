@@ -3,15 +3,15 @@
 ## Project Structure & Module Organization
 - Entry points: `index.html`, `index.tsx`, `App.tsx`.
 - UI components in `components/` (e.g., `Header.tsx`, `SvgDisplay.tsx`).
-- API/Audio logic in `services/` (`geminiService.ts`, `realtimeAudioService.ts`).
+- API/Audio logic in `services/` (`geminiService.ts`, `realtimeAudioService.ts`). `geminiService.ts` now calls OpenRouter for lesson generation and follow‑ups; `realtimeAudioService.ts`/`geminiLiveAudioService.ts` still use Gemini for TTS.
 - Build output in `dist/` (ignored by Git). Config: `vite.config.ts`, `tsconfig.json`.
-- Secrets in `.env.local` (ignored). Required: `GEMINI_API_KEY`.
+- Secrets in `.env.local` (ignored). Required: `OPENROUTER_API_KEY` (SVG + Flash), `GEMINI_API_KEY` (live audio).
 
 ## Build, Test, and Development Commands
 - `npm run dev` — start Vite dev server (typically http://localhost:5173).
 - `npm run build` — production build to `dist/`.
 - `npm run preview` — serve the built app locally.
-Notes: ensure `.env.local` includes `GEMINI_API_KEY`; Vite exposes it to `process.env.API_KEY` via `vite.config.ts`.
+Notes: ensure `.env.local` includes `OPENROUTER_API_KEY` and, if using TTS, `GEMINI_API_KEY`. Vite exposes: `process.env.OPENROUTER_API_KEY` (OpenRouter) and `process.env.API_KEY`/`process.env.GEMINI_API_KEY` (Gemini live audio) via `vite.config.ts`.
 
 ## Coding Style & Naming Conventions
 - Language: TypeScript + React function components and hooks.

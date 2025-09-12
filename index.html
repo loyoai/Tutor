@@ -6,11 +6,7 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI SVG Generator</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      // Enable class-based dark mode so we can toggle via `html.dark`.
-      tailwind.config = { darkMode: 'class' };
-    </script>
+    <!-- Tailwind built via PostCSS; see index.css import in index.tsx -->
     <script>
       // Prevent theme flash: set initial class before React mounts.
       (function () {
@@ -22,16 +18,7 @@
         } catch (_) {}
       })();
     </script>
-  <script type="importmap">
-{
-  "imports": {
-    "react/": "https://aistudiocdn.com/react@^19.1.1/",
-    "react": "https://aistudiocdn.com/react@^19.1.1",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.17.0",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/"
-  }
-}
-</script>
+  <!-- Import map not required when bundling via Vite -->
 </head>
   <body class="bg-[#FBFAF8]">
     <div id="root"></div>

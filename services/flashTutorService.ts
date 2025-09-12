@@ -1,5 +1,3 @@
-import { GoogleGenAI, Chat, createPartFromFunctionResponse } from '@google/genai';
-
 const FLASH_DEBUG = true;
 const flog = (...args: any[]) => { if (FLASH_DEBUG) console.log('[Flash]', ...args); };
 const fwarn = (...args: any[]) => { if (FLASH_DEBUG) console.warn('[Flash]', ...args); };
@@ -139,45 +137,72 @@ const functionDeclarations = [
 type OnEvent = (event: FlashEvent) => void;
 
 export class FlashTutorService {
-  private ai: GoogleGenAI;
-  private chat: Chat | null = null;
+  private messages: any[] = [];
   private onEvent?: OnEvent;
   private pendingCall: { id: string; name: FlashToolName } | null = null;
   private submitting = false;
 
   constructor() {
-    if (!process.env.API_KEY) {
-      throw new Error('API_KEY environment variable is not set.');
+    if (!process.env.OPENROUTER_API_KEY) {
+      throw new Error('OPENROUTER_API_KEY environment variable is not set.');
     }
-    this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   }
 
-  private getConfig() {
+  private mapTools() {
+    // Map our declarations to OpenAI-compatible tool schema
+    return functionDeclarations.map((fd) => ({
+      type: 'function',
+      function: {
+        name: fd.name,
+        description: fd.description,
+        parameters: fd.parametersJsonSchema,
+      },
+    }));
+  }
+
+  private headers() {
+    const referer = (typeof window !== 'undefined' && window.location?.origin) ? window.location.origin : 'http://localhost';
     return {
-      systemInstruction: TEACHING_ASSISTANT_PROMPT,
-      tools: [{ functionDeclarations }],
-      // Allow model to include short preface text before calling tools
-      toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
-    } as any;
+      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': referer,
+      'X-Title': 'Tutor',
+    } as Record<string, string>;
   }
 
   async start(goal: string, onEvent: OnEvent): Promise<void> {
     this.onEvent = onEvent;
-    this.chat = this.ai.chats.create({ model: 'gemini-2.5-flash', config: this.getConfig() });
+    this.messages = [
+      { role: 'system', content: TEACHING_ASSISTANT_PROMPT },
+      { role: 'user', content: goal },
+    ];
     flog('start()', { goalPreview: goal.slice(0, 120) });
-    const res = await this.chat.sendMessage({ message: goal });
-    flog('start(): raw response received');
-    try {
-      this.handleResponse(res);
-    } catch (e) {
-      ferr('start(): handleResponse error', e);
-      throw e;
+    const body = {
+      model: 'moonshotai/kimi-k2-0905',
+      messages: this.messages,
+      tools: this.mapTools(),
+      tool_choice: 'required',
+      provider: { only: ['baseten/fp4'] },
+      max_tokens: 2048,
+    } as any;
+
+    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => '');
+      ferr('start(): OpenRouter error', resp.status, t);
+      throw new Error('Flash agent request failed');
     }
+    const json = await resp.json();
+    flog('start(): response received');
+    this.handleResponse(json);
   }
 
   // For tool results, pass the function name and a structured response object
   async submitToolResult(functionName: FlashToolName, response: unknown): Promise<void> {
-    if (!this.chat) throw new Error('Flash chat not started.');
     if (this.submitting) return; // prevent double submissions
     this.submitting = true;
     try {
@@ -185,23 +210,67 @@ export class FlashTutorService {
       const id = this.pendingCall?.id;
       const expectName = this.pendingCall?.name;
       if (!id || !expectName || expectName !== functionName) {
-        // Fallback: send as plain user content to avoid stalling
+        // No pending tool call: treat this as a plain user reply
         fwarn('submitToolResult(): pending mismatch, sending as user message');
-        const res = await this.chat.sendMessage({ message: JSON.stringify(response) });
-        flog('submitToolResult(): raw response after mismatch');
-        this.handleResponse(res);
+        let userText = '';
+        try {
+          if (functionName === 'askTrueFalseQuestion') {
+            const ans = (response as any)?.answer;
+            userText = `Answer: ${ans ? 'True' : 'False'}`;
+          } else if (functionName === 'askMultipleChoiceQuestion') {
+            const sel = (response as any)?.selected;
+            userText = `I choose: ${String(sel)}`;
+          } else if (functionName === 'askOpenEndedQuestion') {
+            const ans = (response as any)?.answer;
+            userText = typeof ans === 'string' ? ans : JSON.stringify(response);
+          } else if (functionName === 'giveDetailedLesson') {
+            userText = 'Ready for the next lesson segment.';
+          }
+        } catch { userText = JSON.stringify(response); }
+        this.messages.push({ role: 'user', content: userText });
+        const reqBody = {
+          model: 'moonshotai/kimi-k2-0905',
+          messages: this.messages,
+          tools: this.mapTools(),
+          tool_choice: 'required',
+          provider: { only: ['baseten/fp4'] },
+          max_tokens: 1024,
+        } as any;
+        try {
+          const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: this.headers(),
+            body: JSON.stringify(reqBody),
+          });
+          const json = await resp.json();
+          flog('submitToolResult(): response after mismatch');
+          this.handleResponse(json);
+        } catch (e) {
+          ferr('submitToolResult(): network error on mismatch path', e);
+          throw new Error('Network error submitting reply. Please try again.');
+        }
         return;
       }
-      const toolContent = {
-        role: 'tool',
-        parts: [createPartFromFunctionResponse(id, functionName, response)],
-      } as any;
-      flog('submitToolResult(): sending toolContent');
-      const res = await this.chat.sendMessage({ message: toolContent } as any);
-      flog('submitToolResult(): raw response after tool content');
+      // Send tool result
+      this.messages.push({ role: 'tool', tool_call_id: id, content: JSON.stringify(response) });
+      flog('submitToolResult(): sending tool result');
+      const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify({
+          model: 'moonshotai/kimi-k2-0905',
+          messages: this.messages,
+          tools: this.mapTools(),
+          tool_choice: 'required',
+          provider: { only: ['baseten/fp4'] },
+          max_tokens: 1024,
+        }),
+      });
+      const json = await resp.json();
+      flog('submitToolResult(): response after tool content');
       // Clear pending call after we send the response
       this.pendingCall = null;
-      this.handleResponse(res);
+      this.handleResponse(json);
     } finally {
       this.submitting = false;
     }
@@ -209,41 +278,30 @@ export class FlashTutorService {
 
   private handleResponse(res: any) {
     flog('handleResponse() invoked');
-    // Prefer explicit functionCalls if provided by SDK
-    const fc = (res && res.functionCalls && res.functionCalls[0]) || undefined;
+    const choice = res?.choices?.[0];
+    const message = choice?.message || {};
+    const toolCalls = message?.tool_calls || message?.toolCalls || [];
     let name: FlashToolName | undefined;
     let args: any = undefined;
     let id: string | undefined;
-    const parts: any[] =
-      res?.candidates?.[0]?.content?.parts ||
-      res?.response?.candidates?.[0]?.content?.parts ||
-      [];
-    flog('handleResponse(): parts snapshot', parts);
+    const prefaceText: string = (typeof message?.content === 'string') ? message.content : (Array.isArray(message?.content) ? message.content.map((c: any) => c?.text || '').join(' ').trim() : '');
 
-    if (fc) {
-      name = fc.name as FlashToolName;
-      args = fc.args || fc.parameters || {};
-      id = fc.id;
-    } else {
-      // Fallback: inspect parts for functionCall
-      const toolPart = parts.find((p) => p.functionCall);
-      if (toolPart) {
-        name = toolPart.functionCall.name as FlashToolName;
-        args = toolPart.functionCall.args || {};
-        id = toolPart.functionCall.id;
+    if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+      const first = toolCalls[0];
+      name = first?.function?.name as FlashToolName | undefined;
+      id = first?.id;
+      try {
+        args = first?.function?.arguments ? JSON.parse(first.function.arguments) : {};
+      } catch {
+        args = {};
       }
     }
-    flog('handleResponse(): fc parsed', { name, id, args });
+    flog('handleResponse(): parsed', { name, id, args, prefaceLen: prefaceText?.length || 0 });
 
     if (!name) {
       // Fallback: trigger an open-ended prompt when no function call is present
       if (this.onEvent) {
-        // try to extract any text from parts
-        const preface = parts
-          .filter((p) => typeof p.text === 'string' && p.text.trim())
-          .map((p) => p.text.trim())
-          .join(' ');
-        const ev = { type: 'openQuestion' as const, showOpenEded: true, preface: preface || undefined };
+        const ev = { type: 'openQuestion' as const, showOpenEded: true, preface: prefaceText || undefined };
         flog('handleResponse(): no func call, emitting event', ev);
         this.onEvent(ev);
       }
@@ -255,16 +313,7 @@ export class FlashTutorService {
     }
 
     if (!this.onEvent) return;
-    // Extract a brief preface from any text parts prior to the first function call
-    let preface: string | undefined;
-    if (parts && parts.length) {
-      const acc: string[] = [];
-      for (const p of parts) {
-        if (p.functionCall) break;
-        if (typeof p.text === 'string' && p.text.trim()) acc.push(p.text.trim());
-      }
-      preface = acc.join(' ').trim() || undefined;
-    }
+    const preface = prefaceText || undefined;
     flog('handleResponse(): extracted preface', preface);
     switch (name) {
       case 'askOpenEndedQuestion':
@@ -305,6 +354,14 @@ export class FlashTutorService {
       default:
         // Ignore unknown
         break;
+    }
+    // Persist the assistant message (including tool_calls) for proper linking
+    try {
+      const choice = res?.choices?.[0];
+      const msg = choice?.message || { role: 'assistant', content: preface || '' };
+      this.messages.push(msg);
+    } catch {
+      this.messages.push({ role: 'assistant', content: preface || '' });
     }
   }
 }

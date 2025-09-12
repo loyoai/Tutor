@@ -1,4 +1,5 @@
-import { GoogleGenAI, Chat } from '@google/genai';
+// OpenRouter-based implementation, preserving the original exports
+// so no changes are required in App.tsx.
 
 type ThemeMode = 'light' | 'dark';
 
@@ -71,70 +72,87 @@ All explanations are plain text. All SVG parts are raw XML snippets, ready for i
  * @returns A promise that resolves when the stream is complete.
  */
 export const generateSvgForTopicStream = async (
-    topic: string,
-    limitThinking: boolean,
-    onStream: (chunk: string) => void,
-    dimensions?: { width: number; height: number },
-    theme: ThemeMode = 'light'
+  topic: string,
+  _limitThinking: boolean,
+  onStream: (chunk: string) => void,
+  dimensions?: { width: number; height: number },
+  theme: ThemeMode = 'light'
 ): Promise<void> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable is not set.");
+  if (!process.env.OPENROUTER_API_KEY) {
+    throw new Error('OPENROUTER_API_KEY environment variable is not set.');
   }
-
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   const dims = dimensions && dimensions.width > 0 && dimensions.height > 0
     ? dimensions
     : { width: 960, height: 600 };
-  const config: { systemInstruction: string; thinkingConfig?: object } = {
-    systemInstruction: buildSystemPrompt(dims.width, dims.height, theme),
-  };
 
-  if (limitThinking) {
-    config.thinkingConfig = { thinkingBudget: 512 };
+  const messages = [
+    { role: 'system', content: buildSystemPrompt(dims.width, dims.height, theme) },
+    { role: 'user', content: topic },
+  ];
+
+  const referer = (typeof window !== 'undefined' && window.location?.origin) ? window.location.origin : 'http://localhost';
+  const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': referer,
+      'X-Title': 'Tutor',
+    },
+    body: JSON.stringify({
+      model: 'moonshotai/kimi-k2-0905',
+      stream: true,
+      provider: { only: ['baseten/fp4'] },
+      messages,
+      max_tokens: 4096,
+    }),
+  });
+
+  if (!resp.ok || !resp.body) {
+    const text = await resp.text().catch(() => '');
+    console.error('OpenRouter request failed', resp.status, text);
+    throw new Error('Could not connect to OpenRouter.');
   }
 
-  // First, establish the stream. If this fails, surface a clear API error.
-  let responseStream: AsyncIterable<any>;
-  try {
-    responseStream = await ai.models.generateContentStream({
-      model: 'gemini-2.5-pro',
-      contents: topic,
-      config,
-    });
-  } catch (apiErr) {
-    console.error('Gemini API request failed:', apiErr);
-    throw new Error('Could not connect to the generative AI service.');
-  }
+  // Minimal SSE reader: parse events split by double newlines, read data: lines
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
 
-  // Then, process the stream. If the UI handler throws, propagate its real cause.
-  try {
-    for await (const chunk of responseStream) {
-      // Some stream events may not contain text; coerce to an empty string.
-      const text = (chunk && typeof chunk.text === 'string') ? chunk.text : '';
-      onStream(text);
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const events = buffer.split('\n\n');
+    buffer = events.pop() || '';
+
+    for (const evt of events) {
+      const lines = evt.split('\n');
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === '[DONE]') continue;
+        try {
+          const json = JSON.parse(data);
+          const delta = json?.choices?.[0]?.delta;
+          const content = typeof delta?.content === 'string' ? delta.content : '';
+          if (content) onStream(content);
+        } catch (e) {
+          // Ignore malformed JSON lines
+        }
+      }
     }
-  } catch (handlerErr) {
-    console.error('Stream processing failed:', handlerErr);
-    // Do not mask handler errors as connectivity problems.
-    throw handlerErr instanceof Error ? handlerErr : new Error('Stream handler failed');
   }
 };
 
 // --- Conversational follow-ups (official Gemini chat) ---
 
-let chatSession: Chat | null = null;
-let aiInstance: GoogleGenAI | null = null;
+type ORMessage = { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; name?: string; tool_call_id?: string };
+type OpenRouterChatSession = { model: string; messages: ORMessage[] };
 
-const getAi = (): GoogleGenAI => {
-  if (!process.env.API_KEY) {
-    throw new Error('API_KEY environment variable is not set.');
-  }
-  if (!aiInstance) {
-    aiInstance = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  }
-  return aiInstance;
-};
+let chatSession: OpenRouterChatSession | null = null;
 
 /**
  * Creates (or replaces) a chat session seeded with the initial exchange.
@@ -148,25 +166,17 @@ export const seedChatFromInitialExchange = async (
   dimensions?: { width: number; height: number },
   theme: ThemeMode = 'light'
 ): Promise<void> => {
-  const ai = getAi();
   const dims = dimensions && dimensions.width > 0 && dimensions.height > 0
     ? dimensions
     : { width: 960, height: 600 };
-  const config: { systemInstruction: string; thinkingConfig?: object } = {
-    systemInstruction: buildSystemPrompt(dims.width, dims.height, theme),
-  };
-  if (limitThinking) {
-    config.thinkingConfig = { thinkingBudget: 512 };
-  }
-
-  chatSession = ai.chats.create({
-    model: 'gemini-2.5-pro',
-    config,
-    history: [
-      { role: 'user', parts: [{ text: userPrompt }] },
-      { role: 'model', parts: [{ text: modelResponse }] },
+  chatSession = {
+    model: 'moonshotai/kimi-k2-0905',
+    messages: [
+      { role: 'system', content: buildSystemPrompt(dims.width, dims.height, theme) },
+      { role: 'user', content: userPrompt },
+      { role: 'assistant', content: modelResponse },
     ],
-  });
+  };
 };
 
 /**
@@ -180,17 +190,65 @@ export const sendFollowUpStream = async (
   if (!chatSession) {
     throw new Error('No active chat session. Seed the chat after initial generation.');
   }
-
-  try {
-    const stream = await chatSession.sendMessageStream({ message: question });
-    for await (const chunk of stream) {
-      const text = (chunk && typeof chunk.text === 'string') ? chunk.text : '';
-      if (text) onStream(text);
-    }
-  } catch (error) {
-    console.error('Error in follow-up send:', error);
-    throw new Error('Could not send follow-up to the generative AI service.');
+  if (!process.env.OPENROUTER_API_KEY) {
+    throw new Error('OPENROUTER_API_KEY environment variable is not set.');
   }
+
+  const referer = (typeof window !== 'undefined' && window.location?.origin) ? window.location.origin : 'http://localhost';
+
+  const messages: ORMessage[] = [...chatSession.messages, { role: 'user', content: question }];
+  const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': referer,
+      'X-Title': 'Tutor',
+    },
+    body: JSON.stringify({
+      model: chatSession.model,
+      provider: { only: ['baseten/fp4'] },
+      stream: true,
+      messages,
+      max_tokens: 4096,
+    }),
+  });
+
+  if (!resp.ok || !resp.body) {
+    const text = await resp.text().catch(() => '');
+    console.error('OpenRouter follow-up failed', resp.status, text);
+    throw new Error('Could not send follow-up to OpenRouter.');
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let accumulated = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split('\n\n');
+    buffer = events.pop() || '';
+    for (const evt of events) {
+      for (const line of evt.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === '[DONE]') continue;
+        try {
+          const json = JSON.parse(data);
+          const delta = json?.choices?.[0]?.delta;
+          const content = typeof delta?.content === 'string' ? delta.content : '';
+          if (content) { onStream(content); accumulated += content; }
+        } catch {}
+      }
+    }
+  }
+
+  // Persist the turn in the session
+  chatSession.messages.push({ role: 'user', content: question });
+  if (accumulated) chatSession.messages.push({ role: 'assistant', content: accumulated });
 };
 
 /** Clears the in-memory chat session. */
